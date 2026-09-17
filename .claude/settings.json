@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Write",
+      "Edit",
+      "Bash"
+    ],
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(su *)",
+      "Bash(rm -rf /)",
+      "Bash(rm -rf / *)",
+      "Bash(rm -rf ~)",
+      "Bash(rm -rf ~/*)",
+      "Bash(mkfs *)",
+      "Bash(dd *)",
+      "Bash(shred *)",
+      "Bash(git push *)",
+      "Bash(git push --force *)",
+      "Bash(git push --force-with-lease *)"
+    ]
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}
