@@ -129,8 +129,12 @@ dump/restore) step.
   identifiers in OCI labels and workflow output.
 - Resolve and pin an immutable commit for `gosu` (tianon/gosu) source, built
   from source in the same image, verified the same way as the PostgreSQL
-  source. This is a second upstream source the release process must track,
-  distinct from the PostgreSQL release itself.
+  source. Resolve and pin an immutable commit for the `docker-entrypoint.sh`
+  and `docker-ensure-initdb.sh` scripts vendored from
+  `docker-library/postgres` (which has no release tags; pin its resolved
+  `master` commit directly). These are the second and third upstream sources
+  the release process must track, distinct from the PostgreSQL release
+  itself and from each other.
 - Use `ubuntu:24.04` as the final runtime base and resolve its manifest digest
   during CI. Keep the Dockerfile small, avoid unnecessary runtime packages,
   clean package metadata, and do not embed credentials.

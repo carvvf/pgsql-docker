@@ -1,0 +1,160 @@
+name: Build custom image
+run-name: Build and scan source-built PostgreSQL image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag_suffix:
+        description: Optional suffix for the local candidate tag
+        required: false
+        default: ''
+      postgres_source_ref:
+        description: PostgreSQL source tag to compile (e.g. REL_18_6)
+        required: false
+        default: REL_18_6
+      postgres_source_revision:
+        description: Optional immutable commit expected for the source tag
+        required: false
+        default: ''
+      postgres_upstream_version:
+        description: PostgreSQL version recorded in image labels (e.g. 18.6)
+        required: false
+        default: 18.6
+      postgres_upstream_digest:
+        description: Optional postgres:18 manifest digest for provenance
+        required: false
+        default: unknown
+      gosu_source_ref:
+        description: gosu source tag to compile
+        required: false
+        default: '1.19'
+      gosu_source_revision:
+        description: Optional immutable commit expected for the gosu tag
+        required: false
+        default: ''
+      entrypoint_source_commit:
+        description: docker-library/postgres commit to vendor the entrypoint from
+        required: false
+        default: ''
+      ubuntu_base_ref:
+        description: Ubuntu runtime reference; prefer an immutable digest
+        required: false
+        default: ubuntu:24.04
+      ubuntu_base_digest:
+        description: Optional Ubuntu manifest digest for provenance
+        required: false
+        default: unknown
+  workflow_call:
+    inputs:
+      image_tag_suffix:
+        required: true
+        type: string
+      postgres_source_ref:
+        required: true
+        type: string
+      postgres_source_revision:
+        required: true
+        type: string
+      postgres_upstream_version:
+        required: true
+        type: string
+      postgres_upstream_digest:
+        required: true
+        type: string
+      gosu_source_ref:
+        required: true
+        type: string
+      gosu_source_revision:
+        required: true
+        type: string
+      entrypoint_source_commit:
+        required: true
+        type: string
+      ubuntu_base_ref:
+        required: true
+        type: string
+      ubuntu_base_digest:
+        required: true
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4.0.0
+
+      - name: Compute local image tag
+        run: |
+          set -euo pipefail
+          tag_suffix='${{ inputs.image_tag_suffix }}'
+          if [ -z "${tag_suffix}" ]; then
+            tag_suffix="${GITHUB_SHA}"
+          fi
+          echo "IMAGE_REF=local/pgsql-custom:amd64-${tag_suffix}" >> "${GITHUB_ENV}"
+
+      - name: Build linux/amd64 image without pushing
+        uses: docker/build-push-action@v7.0.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          pull: true
+          push: false
+          tags: ${{ env.IMAGE_REF }}
+          cache-from: type=gha,scope=pgsql-source-amd64
+          cache-to: type=gha,mode=max,scope=pgsql-source-amd64
+          build-args: |
+            POSTGRES_SOURCE_REF=${{ inputs.postgres_source_ref }}
+            POSTGRES_SOURCE_REVISION=${{ inputs.postgres_source_revision }}
+            POSTGRES_UPSTREAM_VERSION=${{ inputs.postgres_upstream_version }}
+            POSTGRES_UPSTREAM_DIGEST=${{ inputs.postgres_upstream_digest }}
+            GOSU_SOURCE_REF=${{ inputs.gosu_source_ref }}
+            GOSU_SOURCE_REVISION=${{ inputs.gosu_source_revision }}
+            ENTRYPOINT_SOURCE_COMMIT=${{ inputs.entrypoint_source_commit }}
+            UBUNTU_BASE_IMAGE=${{ inputs.ubuntu_base_ref }}
+            UBUNTU_BASE_DIGEST=${{ inputs.ubuntu_base_digest }}
+            SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+            CACHEBUST=${{ github.run_id }}
+
+      - name: Scan candidate with Trivy
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}
+          version: v0.74.0
+          cache: false
+          format: json
+          output: trivy-report-candidate-amd64.json
+          scanners: vuln
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+
+      - name: Upload candidate Trivy report
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: trivy-candidate-amd64-${{ github.run_id }}
+          path: trivy-report-candidate-amd64.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Run PostgreSQL integration test
+        env:
+          IMAGE_REF: ${{ env.IMAGE_REF }}
+        run: bash tests/test-postgres-image.sh
+
+      - name: Show container logs on test failure
+        if: failure()
+        run: |
+          docker ps -a --filter 'name=postgres-image-test-' --format '{{.Names}}' \
+            | xargs -r -n1 docker logs --tail 200 || true

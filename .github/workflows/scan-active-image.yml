@@ -1,0 +1,372 @@
+name: Active GHCR image status
+run-name: Daily PostgreSQL source-build scan
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: Build and publish a candidate even when no rebuild condition is present
+        required: false
+        default: 'false'
+      force_fail:
+        description: Force a workflow failure to test GitHub notifications
+        required: false
+        default: 'false'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  initial_scan:
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.resolve.outputs.image_ref }}
+      upstream_ref: ${{ steps.resolve.outputs.upstream_ref }}
+      upstream_version: ${{ steps.resolve.outputs.upstream_version }}
+      upstream_digest: ${{ steps.resolve.outputs.upstream_digest }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_revision: ${{ steps.resolve.outputs.source_revision }}
+      gosu_source_ref: ${{ steps.resolve.outputs.gosu_source_ref }}
+      gosu_source_revision: ${{ steps.resolve.outputs.gosu_source_revision }}
+      entrypoint_source_commit: ${{ steps.resolve.outputs.entrypoint_source_commit }}
+      ubuntu_base_ref: ${{ steps.resolve.outputs.ubuntu_base_ref }}
+      ubuntu_base_digest: ${{ steps.resolve.outputs.ubuntu_base_digest }}
+      active_exists: ${{ steps.resolve.outputs.active_exists }}
+      source_changed: ${{ steps.resolve.outputs.source_changed }}
+      gosu_changed: ${{ steps.resolve.outputs.gosu_changed }}
+      entrypoint_changed: ${{ steps.resolve.outputs.entrypoint_changed }}
+      ubuntu_base_changed: ${{ steps.resolve.outputs.ubuntu_base_changed }}
+      has_findings: ${{ steps.summary.outputs.has_findings }}
+      needs_rebuild: ${{ steps.summary.outputs.needs_rebuild }}
+
+    steps:
+      - name: Force failure for notification testing
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.force_fail == 'true' }}
+        run: |
+          echo 'Forced failure for notification testing.' >&2
+          exit 1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Pulling the major-pinned "postgres:18" tag (not "postgres:latest")
+      # structurally prevents this daily job from ever resolving a PG19
+      # candidate on its own; see AGENTS.md "Version and upgrade policy".
+      - name: Resolve source and active image targets
+        id: resolve
+        run: |
+          set -euo pipefail
+
+          docker pull postgres:18
+          upstream_digest="$(docker image inspect postgres:18 --format '{{index .RepoDigests 0}}')"
+          upstream_digest="${upstream_digest##*@}"
+          env_json="$(docker image inspect postgres:18 --format '{{json .Config.Env}}')"
+          pg_version_full="$(jq -r '.[] | select(startswith("PG_VERSION="))' <<<"${env_json}" | cut -d= -f2-)"
+          upstream_version="${pg_version_full%%-*}"
+          upstream_ref="postgres@${upstream_digest}"
+
+          if [[ ! "${upstream_version}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Unsupported PostgreSQL version format: ${upstream_version}" >&2
+            exit 1
+          fi
+          source_ref="REL_${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
+          source_revision="$(git ls-remote https://github.com/postgres/postgres.git "refs/tags/${source_ref}^{}" | awk 'NR == 1 { print $1 }')"
+          if [ -z "${source_revision}" ]; then
+            source_revision="$(git ls-remote https://github.com/postgres/postgres.git "refs/tags/${source_ref}" | awk 'NR == 1 { print $1 }')"
+          fi
+
+          gosu_source_ref="$(jq -r '.[] | select(startswith("GOSU_VERSION="))' <<<"${env_json}" | cut -d= -f2-)"
+          gosu_source_revision="$(git ls-remote https://github.com/tianon/gosu.git "refs/tags/${gosu_source_ref}^{}" | awk 'NR == 1 { print $1 }')"
+          if [ -z "${gosu_source_revision}" ]; then
+            gosu_source_revision="$(git ls-remote https://github.com/tianon/gosu.git "refs/tags/${gosu_source_ref}" | awk 'NR == 1 { print $1 }')"
+          fi
+
+          entrypoint_source_commit="$(git ls-remote https://github.com/docker-library/postgres.git refs/heads/master | awk 'NR == 1 { print $1 }')"
+
+          docker pull ubuntu:24.04
+          ubuntu_base_digest="$(docker image inspect ubuntu:24.04 --format '{{index .RepoDigests 0}}')"
+          ubuntu_base_digest="${ubuntu_base_digest##*@}"
+          ubuntu_base_ref="ubuntu@${ubuntu_base_digest}"
+
+          if [[ ! "${upstream_digest}" =~ ^sha256:[a-f0-9]{64}$ ]] \
+            || [[ ! "${source_revision}" =~ ^[a-f0-9]{40}$ ]] \
+            || [[ ! "${gosu_source_revision}" =~ ^[a-f0-9]{40}$ ]] \
+            || [[ ! "${entrypoint_source_commit}" =~ ^[a-f0-9]{40}$ ]] \
+            || [[ ! "${ubuntu_base_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo 'Could not resolve immutable PostgreSQL, gosu, entrypoint, or Ubuntu build inputs.' >&2
+            exit 1
+          fi
+
+          owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          package_name="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${owner_lc}/${package_name}:latest"
+          active_exists=false
+          source_changed=true
+          gosu_changed=true
+          entrypoint_changed=true
+          ubuntu_base_changed=true
+
+          if docker pull "${image_ref}"; then
+            active_exists=true
+            active_source_revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.postgres.source.revision"}}')"
+            active_gosu_revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.gosu.source.revision"}}')"
+            active_entrypoint_commit="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.entrypoint.source.commit"}}')"
+            active_ubuntu_base_digest="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.runtime.base.digest"}}')"
+            if [ "${active_source_revision}" = "${source_revision}" ]; then
+              source_changed=false
+            fi
+            if [ "${active_gosu_revision}" = "${gosu_source_revision}" ]; then
+              gosu_changed=false
+            fi
+            if [ "${active_entrypoint_commit}" = "${entrypoint_source_commit}" ]; then
+              entrypoint_changed=false
+            fi
+            if [ "${active_ubuntu_base_digest}" = "${ubuntu_base_digest}" ]; then
+              ubuntu_base_changed=false
+            fi
+          else
+            echo "Active image is unavailable: ${image_ref}" >&2
+            echo 'Treating this as a bootstrap publication; preflight will fail if GHCR is inaccessible.' >&2
+          fi
+
+          {
+            echo "image_ref=${image_ref}"
+            echo "upstream_ref=${upstream_ref}"
+            echo "upstream_version=${upstream_version}"
+            echo "upstream_digest=${upstream_digest}"
+            echo "source_ref=${source_ref}"
+            echo "source_revision=${source_revision}"
+            echo "gosu_source_ref=${gosu_source_ref}"
+            echo "gosu_source_revision=${gosu_source_revision}"
+            echo "entrypoint_source_commit=${entrypoint_source_commit}"
+            echo "ubuntu_base_ref=${ubuntu_base_ref}"
+            echo "ubuntu_base_digest=${ubuntu_base_digest}"
+            echo "active_exists=${active_exists}"
+            echo "source_changed=${source_changed}"
+            echo "gosu_changed=${gosu_changed}"
+            echo "entrypoint_changed=${entrypoint_changed}"
+            echo "ubuntu_base_changed=${ubuntu_base_changed}"
+          } >> "${GITHUB_OUTPUT}"
+
+          {
+            echo '## Daily scan targets'
+            echo "- Active image: ${image_ref}"
+            echo "- Active image available: ${active_exists}"
+            echo "- Official PostgreSQL release signal: ${upstream_ref}"
+            echo "- PostgreSQL source: ${source_ref}@${source_revision} (changed: ${source_changed})"
+            echo "- gosu source: ${gosu_source_ref}@${gosu_source_revision} (changed: ${gosu_changed})"
+            echo "- Entrypoint source: docker-library/postgres@${entrypoint_source_commit} (changed: ${entrypoint_changed})"
+            echo "- Ubuntu runtime base: ${ubuntu_base_ref} (changed: ${ubuntu_base_changed})"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Scan active image with Trivy
+        if: steps.resolve.outputs.active_exists == 'true'
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ steps.resolve.outputs.image_ref }}
+          version: v0.74.0
+          cache: false
+          format: json
+          output: trivy-report-initial.json
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+
+      - name: Summarize rebuild decision
+        id: summary
+        env:
+          ACTIVE_EXISTS: ${{ steps.resolve.outputs.active_exists }}
+          SOURCE_CHANGED: ${{ steps.resolve.outputs.source_changed }}
+          GOSU_CHANGED: ${{ steps.resolve.outputs.gosu_changed }}
+          ENTRYPOINT_CHANGED: ${{ steps.resolve.outputs.entrypoint_changed }}
+          UBUNTU_BASE_CHANGED: ${{ steps.resolve.outputs.ubuntu_base_changed }}
+          FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
+        run: |
+          set -euo pipefail
+
+          critical_count=0
+          high_count=0
+          has_findings=false
+          needs_rebuild=false
+          reasons=()
+
+          if [ "${ACTIVE_EXISTS}" = 'true' ]; then
+            if [ ! -f trivy-report-initial.json ]; then
+              echo 'Trivy report for the active image was not generated.' >&2
+              exit 1
+            fi
+            critical_count="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-report-initial.json)"
+            high_count="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-report-initial.json)"
+            if [ "${critical_count}" -gt 0 ] || [ "${high_count}" -gt 0 ]; then
+              has_findings=true
+              needs_rebuild=true
+              reasons+=('HIGH/CRITICAL findings in active image')
+            fi
+          else
+            needs_rebuild=true
+            reasons+=('GHCR image bootstrap')
+          fi
+
+          if [ "${SOURCE_CHANGED}" = 'true' ]; then
+            needs_rebuild=true
+            reasons+=('PostgreSQL source revision changed')
+          fi
+          if [ "${GOSU_CHANGED}" = 'true' ]; then
+            needs_rebuild=true
+            reasons+=('gosu source revision changed')
+          fi
+          if [ "${ENTRYPOINT_CHANGED}" = 'true' ]; then
+            needs_rebuild=true
+            reasons+=('entrypoint source commit changed')
+          fi
+          if [ "${UBUNTU_BASE_CHANGED}" = 'true' ]; then
+            needs_rebuild=true
+            reasons+=('Ubuntu runtime-base digest changed')
+          fi
+          if [ "${FORCE_REBUILD}" = 'true' ]; then
+            needs_rebuild=true
+            reasons+=('manual force_rebuild input')
+          fi
+
+          reason_text='none'
+          if [ "${#reasons[@]}" -gt 0 ]; then
+            reason_text="$(IFS='; '; echo "${reasons[*]}")"
+          fi
+
+          {
+            echo "critical_count=${critical_count}"
+            echo "high_count=${high_count}"
+            echo "has_findings=${has_findings}"
+            echo "needs_rebuild=${needs_rebuild}"
+          } >> "${GITHUB_OUTPUT}"
+
+          {
+            echo '## Initial Trivy result'
+            echo "- CRITICAL: ${critical_count}"
+            echo "- HIGH: ${high_count}"
+            echo "- Rebuild required: ${needs_rebuild}"
+            echo "- Reason: ${reason_text}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload initial Trivy report
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: trivy-initial-${{ github.run_id }}
+          path: trivy-report-initial.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  build_and_publish:
+    if: needs.initial_scan.outputs.needs_rebuild == 'true'
+    needs: initial_scan
+    uses: ./.github/workflows/publish-custom.yml
+    with:
+      postgres_upstream_ref: ${{ needs.initial_scan.outputs.upstream_ref }}
+      postgres_upstream_version: ${{ needs.initial_scan.outputs.upstream_version }}
+      postgres_upstream_digest: ${{ needs.initial_scan.outputs.upstream_digest }}
+      postgres_source_ref: ${{ needs.initial_scan.outputs.source_ref }}
+      postgres_source_revision: ${{ needs.initial_scan.outputs.source_revision }}
+      gosu_source_ref: ${{ needs.initial_scan.outputs.gosu_source_ref }}
+      gosu_source_revision: ${{ needs.initial_scan.outputs.gosu_source_revision }}
+      entrypoint_source_commit: ${{ needs.initial_scan.outputs.entrypoint_source_commit }}
+      ubuntu_base_ref: ${{ needs.initial_scan.outputs.ubuntu_base_ref }}
+      ubuntu_base_digest: ${{ needs.initial_scan.outputs.ubuntu_base_digest }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    secrets: inherit
+
+  final_scan:
+    needs:
+      - initial_scan
+      - build_and_publish
+    if: needs.initial_scan.outputs.needs_rebuild == 'true' && needs.build_and_publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Deliberately scan mutable latest after publication. Its changed result
+      # triggers the downstream update notification job below.
+      - name: Scan rebuilt active image with Trivy
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ needs.initial_scan.outputs.image_ref }}
+          version: v0.74.0
+          cache: false
+          format: json
+          output: trivy-report-final.json
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+
+      - name: Summarize final vulnerabilities
+        id: summary
+        run: |
+          set -euo pipefail
+          critical_count="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-report-final.json)"
+          high_count="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-report-final.json)"
+          has_findings=false
+          if [ "${critical_count}" -gt 0 ] || [ "${high_count}" -gt 0 ]; then
+            has_findings=true
+          fi
+
+          echo "has_findings=${has_findings}" >> "${GITHUB_OUTPUT}"
+          {
+            echo '## Final Trivy result'
+            echo "- Image: ${{ needs.initial_scan.outputs.image_ref }}"
+            echo "- CRITICAL: ${critical_count}"
+            echo "- HIGH: ${high_count}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload final Trivy report
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: trivy-final-${{ github.run_id }}
+          path: trivy-report-final.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail on final HIGH or CRITICAL findings
+        if: steps.summary.outputs.has_findings == 'true'
+        run: |
+          echo 'HIGH or CRITICAL vulnerabilities remain in the rebuilt active image.' >&2
+          exit 1
+
+  notify_downstreams:
+    needs:
+      - initial_scan
+      - build_and_publish
+      - final_scan
+    if: >-
+      always() &&
+      needs.initial_scan.outputs.needs_rebuild == 'true' &&
+      needs.build_and_publish.result == 'success' &&
+      needs.final_scan.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Signal successful rebuild to downstream operators
+        run: |
+          echo '::error::PostgreSQL image rebuilt and scanned cleanly. Pull and redeploy downstream services.'
+          exit 1

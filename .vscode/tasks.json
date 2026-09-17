@@ -1,0 +1,150 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Docker: build local image",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "build",
+        "--pull",
+        "--no-cache",
+        "-t",
+        "pgsql-custom:local",
+        "."
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint: Dockerfile",
+      "hide": true,
+      "type": "shell",
+      "command": "docker run --rm -i hadolint/hadolint:v2.12.0-alpine hadolint --failure-threshold warning - < Dockerfile",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "/bin/bash",
+          "args": [
+            "-lc"
+          ]
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint: shell scripts",
+      "hide": true,
+      "type": "shell",
+      "command": "docker run --rm --entrypoint shellcheck -v \"${workspaceFolder}:/workspace:ro\" -w /workspace koalaman/shellcheck-alpine:v0.10.0 --shell=bash tests/test-postgres-image.sh scripts/trivy/scan-image.sh tools/dev_trivy_scan.sh",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "/bin/bash",
+          "args": [
+            "-lc"
+          ]
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Lint: GitHub Actions",
+      "hide": true,
+      "type": "shell",
+      "command": "docker run --rm --entrypoint actionlint -v \"${workspaceFolder}:/repo:ro\" -w /repo rhysd/actionlint:1.7.7 -color .github/workflows/*.yml",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "shell": {
+          "executable": "/bin/bash",
+          "args": [
+            "-lc"
+          ]
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: PostgreSQL runtime",
+      "hide": true,
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "tests/test-postgres-image.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "IMAGE_REF": "pgsql-custom:local",
+          "RAGTIME_REPO": "${input:ragtimeRepoPath}"
+        }
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Trivy: scan CVE",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "tools/dev_trivy_scan.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "IMAGE_REF": "pgsql-custom:local"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: all",
+      "type": "shell",
+      "dependsOn": [
+        "Lint: Dockerfile",
+        "Lint: shell scripts",
+        "Lint: GitHub Actions",
+        "Test: PostgreSQL runtime"
+      ],
+      "dependsOrder": "sequence",
+      "command": "true",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "ragtimeRepoPath",
+      "type": "promptString",
+      "description": "Path to the checked-out ragtime-rag-orch repository (for the postgres-init bootstrap script)",
+      "default": "../ragtime-rag-orch"
+    }
+  ]
+}

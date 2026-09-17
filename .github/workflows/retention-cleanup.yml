@@ -1,0 +1,159 @@
+name: Retention cleanup
+run-name: Retention cleanup
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report candidates without deleting them
+        required: false
+        default: 'false'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+permissions:
+  contents: read
+  packages: write
+  actions: write
+
+jobs:
+  cleanup-ghcr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old GHCR versions while retaining rollback images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETENTION_DAYS: '60'
+          RETAIN_CUSTOM_VERSIONS: '10'
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+
+          owner="${GITHUB_REPOSITORY_OWNER}"
+          package_name="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"
+          owner_type="$(gh api -H 'Accept: application/vnd.github+json' "/users/${owner}" --jq '.type')"
+          if [ "${owner_type}" = 'Organization' ]; then
+            package_scope="/orgs/${owner}"
+          else
+            package_scope="/users/${owner}"
+          fi
+          cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
+
+          set +e
+          versions_json="$(gh api -H 'Accept: application/vnd.github+json' "${package_scope}/packages/container/${package_name}/versions?per_page=100" 2>/tmp/pgsql-ghcr-retention.err)"
+          versions_status=$?
+          set -e
+          if [ "${versions_status}" -ne 0 ]; then
+            if grep -q '404' /tmp/pgsql-ghcr-retention.err; then
+              echo 'GHCR package does not exist yet; nothing to clean.'
+              exit 0
+            fi
+            cat /tmp/pgsql-ghcr-retention.err >&2
+            exit "${versions_status}"
+          fi
+
+          scanned=0
+          kept=0
+          deleted=0
+          candidates=0
+          retained_version_ids="$(
+            jq -r '
+              [
+                .[]
+                | select((.metadata.container.tags // []) | any(test("-custom\\.[0-9]+$")))
+                | {id: .id, updated_at: (.updated_at // .created_at // "")}
+              ]
+              | sort_by(.updated_at)
+              | reverse
+              | .[0:env.RETAIN_CUSTOM_VERSIONS | tonumber][]
+              | .id
+            ' <<<"${versions_json}"
+          )"
+          while IFS= read -r version; do
+            scanned=$((scanned + 1))
+            version_id="$(jq -r '.id' <<<"${version}")"
+            updated_at="$(jq -r '.updated_at // .created_at // ""' <<<"${version}")"
+            tags="$(jq -r '(.metadata.container.tags // []) | join(",")' <<<"${version}")"
+
+            if jq -e '(.metadata.container.tags // []) | index("latest") != null' <<<"${version}" >/dev/null; then
+              kept=$((kept + 1))
+              echo "KEEP id=${version_id} tags=[${tags}] reason=contains-latest"
+              continue
+            fi
+            if grep -Fxq "${version_id}" <<<"${retained_version_ids}"; then
+              kept=$((kept + 1))
+              echo "KEEP id=${version_id} tags=[${tags}] reason=rollback-retention"
+              continue
+            fi
+            if [ -z "${updated_at}" ] || [ "$(date -u -d "${updated_at}" +%s)" -ge "${cutoff_epoch}" ]; then
+              kept=$((kept + 1))
+              echo "KEEP id=${version_id} tags=[${tags}] reason=within-retention-or-missing-timestamp"
+              continue
+            fi
+
+            candidates=$((candidates + 1))
+            if [ "${DRY_RUN}" = 'true' ]; then
+              echo "DRY-RUN id=${version_id} tags=[${tags}] updated_at=${updated_at}"
+              continue
+            fi
+            gh api --method DELETE -H 'Accept: application/vnd.github+json' \
+              "${package_scope}/packages/container/${package_name}/versions/${version_id}" >/dev/null
+            deleted=$((deleted + 1))
+            echo "DELETE id=${version_id} tags=[${tags}] updated_at=${updated_at}"
+          done < <(jq -c '.[]' <<<"${versions_json}")
+
+          {
+            echo '## GHCR retention result'
+            echo "- Retention days: ${RETENTION_DAYS}"
+            echo "- Custom versions retained for rollback: ${RETAIN_CUSTOM_VERSIONS}"
+            echo "- Dry run: ${DRY_RUN}"
+            echo "- Versions scanned: ${scanned}"
+            echo "- Versions kept: ${kept}"
+            echo "- Versions matching deletion policy: ${candidates}"
+            echo "- Versions deleted: ${deleted}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  cleanup-workflow-runs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete completed workflow runs older than 60 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETENTION_DAYS: '60'
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
+          deleted=0
+          candidates=0
+          runs_json="$(gh api -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100")"
+
+          while IFS= read -r run; do
+            status="$(jq -r '.status' <<<"${run}")"
+            created_at="$(jq -r '.created_at' <<<"${run}")"
+            run_id="$(jq -r '.id' <<<"${run}")"
+            if [ "${status}" != 'completed' ] || [ "$(date -u -d "${created_at}" +%s)" -ge "${cutoff_epoch}" ]; then
+              continue
+            fi
+            candidates=$((candidates + 1))
+            if [ "${DRY_RUN}" = 'true' ]; then
+              echo "DRY-RUN run_id=${run_id} created_at=${created_at}"
+              continue
+            fi
+            gh api --method DELETE -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" >/dev/null
+            deleted=$((deleted + 1))
+            echo "DELETE run_id=${run_id} created_at=${created_at}"
+          done < <(jq -c '.workflow_runs[] | select(.status == "completed")' <<<"${runs_json}")
+
+          {
+            echo '## Workflow-run retention result'
+            echo "- Retention days: ${RETENTION_DAYS}"
+            echo "- Dry run: ${DRY_RUN}"
+            echo "- Runs matching deletion policy: ${candidates}"
+            echo "- Runs deleted: ${deleted}"
+          } >> "${GITHUB_STEP_SUMMARY}"
