@@ -302,32 +302,20 @@ jobs:
             echo "- Target: ${image_ref}:${version}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  build:
+  build-validate-and-promote:
     needs: preflight
-    uses: ./.github/workflows/build-custom.yml
-    with:
-      image_tag_suffix: ${{ needs.preflight.outputs.version }}
-      postgres_source_ref: ${{ needs.preflight.outputs.source_ref }}
-      postgres_source_revision: ${{ needs.preflight.outputs.source_revision }}
-      postgres_upstream_version: ${{ needs.preflight.outputs.upstream_version }}
-      postgres_upstream_digest: ${{ needs.preflight.outputs.upstream_digest }}
-      gosu_source_ref: ${{ needs.preflight.outputs.gosu_source_ref }}
-      gosu_source_revision: ${{ needs.preflight.outputs.gosu_source_revision }}
-      entrypoint_source_commit: ${{ needs.preflight.outputs.entrypoint_source_commit }}
-      ubuntu_base_ref: ${{ needs.preflight.outputs.ubuntu_base_ref }}
-      ubuntu_base_digest: ${{ needs.preflight.outputs.ubuntu_base_digest }}
-    permissions:
-      contents: read
-
-  publish:
-    needs:
-      - preflight
-      - build
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
       id-token: write
+    env:
+      IMAGE_ARCHIVE: /tmp/pgsql-custom-${{ github.run_id }}-${{ github.sha }}.docker.tar
+      OCI_ARCHIVE: /tmp/pgsql-custom-${{ github.run_id }}-${{ github.sha }}.oci.tar
+      LOCAL_IMAGE_REF: local/pgsql-custom:amd64-${{ needs.preflight.outputs.version }}
+      OCI_IMAGE_REF: local/pgsql-custom:amd64-${{ needs.preflight.outputs.version }}
+      RELEASE_IMAGE: ${{ needs.preflight.outputs.image_ref }}:${{ needs.preflight.outputs.version }}
+      LATEST_IMAGE: ${{ needs.preflight.outputs.image_ref }}:latest
 
     steps:
       - name: Checkout repository
@@ -336,27 +324,18 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.0.0
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v4.0.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-
-      - name: Build and publish linux/amd64 image
+      - name: Build one linux/amd64 candidate for validation and promotion
         uses: docker/build-push-action@v7.0.0
         with:
           context: .
           platforms: linux/amd64
-          push: true
           pull: true
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=pgsql-source-amd64
           cache-to: type=gha,mode=max,scope=pgsql-source-amd64
-          tags: |
-            ${{ needs.preflight.outputs.image_ref }}:${{ needs.preflight.outputs.version }}
-            ${{ needs.preflight.outputs.image_ref }}:latest
+          tags: ${{ env.LOCAL_IMAGE_REF }}
+          outputs: type=oci,dest=${{ env.OCI_ARCHIVE }},name=${{ env.OCI_IMAGE_REF }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
@@ -381,10 +360,105 @@ jobs:
             SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
             CACHEBUST=${{ github.run_id }}
 
+      - name: Export the OCI candidate for Trivy and integration testing
+        run: |
+          set -euo pipefail
+
+          docker pull quay.io/skopeo/stable:v1.22.3
+          docker run --rm \
+            -e OCI_IMAGE_REF \
+            -e LOCAL_IMAGE_REF \
+            -e IMAGE_ARCHIVE \
+            -v "${OCI_ARCHIVE}:/image.oci.tar:ro" \
+            -v /tmp:/tmp \
+            --entrypoint /bin/sh \
+            quay.io/skopeo/stable:v1.22.3 \
+            -euc '
+              skopeo copy --override-os linux --override-arch amd64 --retry-times 3 \
+                "oci-archive:/image.oci.tar:${OCI_IMAGE_REF}" \
+                "docker-archive:${IMAGE_ARCHIVE}:${LOCAL_IMAGE_REF}"
+            '
+
+      - name: Scan candidate archive with Trivy
+        env:
+          TRIVY_CACHE_DIR: /tmp/trivy-cache
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${TRIVY_CACHE_DIR}"
+          docker pull aquasec/trivy:0.74.0
+
+          docker run --rm \
+            -v "${IMAGE_ARCHIVE}:${IMAGE_ARCHIVE}:ro" \
+            -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+            aquasec/trivy:0.74.0 \
+            image \
+            --input "${IMAGE_ARCHIVE}" \
+            --format json \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --pkg-types os,library \
+            --timeout 40m \
+            --exit-code 1 \
+            > /tmp/trivy-report-candidate-amd64.json
+
+      - name: Upload candidate Trivy report
+        if: always()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: trivy-candidate-amd64-${{ github.run_id }}
+          path: /tmp/trivy-report-candidate-amd64.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Load scanned candidate for integration testing
+        run: docker load --input "${IMAGE_ARCHIVE}"
+
+      - name: Run PostgreSQL integration test
+        env:
+          IMAGE_REF: ${{ env.LOCAL_IMAGE_REF }}
+        run: bash tests/test-postgres-image.sh
+
+      - name: Show container logs on test failure
+        if: failure()
+        run: |
+          docker ps -a --filter 'name=postgres-image-test-' --format '{{.Names}}' \
+            | xargs -r -n1 docker logs --tail 200 || true
+
+      - name: Promote the validated image with Skopeo
+        env:
+          REGISTRY: ghcr.io
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # The Docker scan archive was converted from this OCI build result.
+          # Promote the OCI archive only after it has passed Trivy and the
+          # integration test; never rebuild here.
+          docker pull quay.io/skopeo/stable:v1.22.3
+          printf '%s' "${REGISTRY_PASSWORD}" | docker run --rm -i \
+            -e REGISTRY \
+            -e REGISTRY_USERNAME \
+            -e OCI_IMAGE_REF \
+            -e RELEASE_IMAGE \
+            -e LATEST_IMAGE \
+            -e REGISTRY_AUTH_FILE=/tmp/auth.json \
+            -v "${OCI_ARCHIVE}:/image.oci.tar:ro" \
+            --entrypoint /bin/sh \
+            quay.io/skopeo/stable:v1.22.3 \
+            -euc '
+              skopeo login --username "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY}"
+              skopeo copy --all --retry-times 3 \
+                "oci-archive:/image.oci.tar:${OCI_IMAGE_REF}" "docker://${RELEASE_IMAGE}"
+              skopeo copy --all --retry-times 3 \
+                "docker://${RELEASE_IMAGE}" "docker://${LATEST_IMAGE}"
+            '
+
       - name: Verify the published linux/amd64 manifest
         run: |
           set -euo pipefail
-          image='${{ needs.preflight.outputs.image_ref }}:${{ needs.preflight.outputs.version }}'
+          image="${RELEASE_IMAGE}"
           docker buildx imagetools inspect "${image}"
           # Excludes non-platform entries such as the provenance/SBOM
           # attestation manifest that buildx attaches to the index.
@@ -394,15 +468,20 @@ jobs:
                 | length == 1
               ' >/dev/null
 
+      - name: Remove candidate archive
+        if: always()
+        run: rm -f "${IMAGE_ARCHIVE}" "${OCI_ARCHIVE}"
+
       - name: Publish summary
         run: |
           {
             echo '## Publish result'
             echo '- Published platform: linux/amd64'
-            echo '- Published image: ${{ needs.preflight.outputs.image_ref }}:${{ needs.preflight.outputs.version }}'
-            echo '- Mutable tag: ${{ needs.preflight.outputs.image_ref }}:latest'
+            echo "- Published image: ${RELEASE_IMAGE}"
+            echo "- Mutable tag: ${LATEST_IMAGE}"
             echo '- PostgreSQL source: ${{ needs.preflight.outputs.source_ref }}@${{ needs.preflight.outputs.source_revision }}'
             echo '- gosu source: ${{ needs.preflight.outputs.gosu_source_ref }}@${{ needs.preflight.outputs.gosu_source_revision }}'
             echo '- Entrypoint source: docker-library/postgres@${{ needs.preflight.outputs.entrypoint_source_commit }}'
             echo '- Ubuntu base: ${{ needs.preflight.outputs.ubuntu_base_ref }}'
+            echo '- Source: one BuildKit invocation, promoted from the validated OCI archive with Skopeo without rebuilding'
           } >> "${GITHUB_STEP_SUMMARY}"
