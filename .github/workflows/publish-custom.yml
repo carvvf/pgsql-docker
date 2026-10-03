@@ -314,6 +314,7 @@ jobs:
       OCI_ARCHIVE: /tmp/pgsql-custom-${{ github.run_id }}-${{ github.sha }}.oci.tar
       LOCAL_IMAGE_REF: local/pgsql-custom:amd64-${{ needs.preflight.outputs.version }}
       OCI_IMAGE_REF: local/pgsql-custom:amd64-${{ needs.preflight.outputs.version }}
+      OCI_ARCHIVE_TAG: amd64-${{ needs.preflight.outputs.version }}
       RELEASE_IMAGE: ${{ needs.preflight.outputs.image_ref }}:${{ needs.preflight.outputs.version }}
       LATEST_IMAGE: ${{ needs.preflight.outputs.image_ref }}:latest
 
@@ -367,6 +368,7 @@ jobs:
           docker pull quay.io/skopeo/stable:v1.22.3
           docker run --rm \
             -e OCI_IMAGE_REF \
+            -e OCI_ARCHIVE_TAG \
             -e LOCAL_IMAGE_REF \
             -e IMAGE_ARCHIVE \
             -v "${OCI_ARCHIVE}:/image.oci.tar:ro" \
@@ -375,7 +377,7 @@ jobs:
             quay.io/skopeo/stable:v1.22.3 \
             -euc '
               skopeo copy --override-os linux --override-arch amd64 --retry-times 3 \
-                "oci-archive:/image.oci.tar:${OCI_IMAGE_REF}" \
+                "oci-archive:/image.oci.tar:${OCI_ARCHIVE_TAG}" \
                 "docker-archive:${IMAGE_ARCHIVE}:${LOCAL_IMAGE_REF}"
             '
 
@@ -441,6 +443,7 @@ jobs:
             -e REGISTRY \
             -e REGISTRY_USERNAME \
             -e OCI_IMAGE_REF \
+            -e OCI_ARCHIVE_TAG \
             -e RELEASE_IMAGE \
             -e LATEST_IMAGE \
             -e REGISTRY_AUTH_FILE=/tmp/auth.json \
@@ -450,7 +453,7 @@ jobs:
             -euc '
               skopeo login --username "${REGISTRY_USERNAME}" --password-stdin "${REGISTRY}"
               skopeo copy --all --retry-times 3 \
-                "oci-archive:/image.oci.tar:${OCI_IMAGE_REF}" "docker://${RELEASE_IMAGE}"
+                "oci-archive:/image.oci.tar:${OCI_ARCHIVE_TAG}" "docker://${RELEASE_IMAGE}"
               skopeo copy --all --retry-times 3 \
                 "docker://${RELEASE_IMAGE}" "docker://${LATEST_IMAGE}"
             '
@@ -470,7 +473,7 @@ jobs:
 
       - name: Remove candidate archive
         if: always()
-        run: rm -f "${IMAGE_ARCHIVE}" "${OCI_ARCHIVE}"
+        run: sudo rm -f "${IMAGE_ARCHIVE}" "${OCI_ARCHIVE}"
 
       - name: Publish summary
         run: |
