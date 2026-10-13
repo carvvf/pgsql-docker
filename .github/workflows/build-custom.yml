@@ -79,6 +79,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  TRIVY_DISABLE_TELEMETRY: 'true'
+  TRIVY_SKIP_VERSION_CHECK: 'true'
 
 jobs:
   build-and-scan:
@@ -130,7 +132,7 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ env.IMAGE_REF }}
-          version: v0.74.0
+          version: v0.75.0
           cache: false
           format: json
           output: trivy-report-candidate-amd64.json

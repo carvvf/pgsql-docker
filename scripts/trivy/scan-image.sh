@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Apply the same scanner policy as the container and GitHub Actions paths.
+export TRIVY_DISABLE_TELEMETRY=true
+export TRIVY_SKIP_VERSION_CHECK=true
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
@@ -50,7 +54,12 @@ run_scan() {
 }
 
 if ! command -v trivy >/dev/null 2>&1; then
-  echo 'Trivy is required. Install it or run the CI workflow.' >&2
+  echo 'Trivy 0.75.0 is required. Install it or use tools/dev_trivy_scan.sh.' >&2
+  exit 2
+fi
+trivy_version="$(trivy --version | awk '/^Version:/ { print $2; exit }')"
+if [ "${trivy_version}" != '0.75.0' ]; then
+  echo "Trivy 0.75.0 is required; found ${trivy_version:-unknown}. Install it or use tools/dev_trivy_scan.sh." >&2
   exit 2
 fi
 if [ ! -f "${DOCKERFILE_PATH}" ]; then

@@ -89,8 +89,10 @@ ENV PATH="/usr/local/go/bin:${PATH}"
 COPY --from=source /source/gosu /source/gosu
 WORKDIR /source/gosu
 ENV CGO_ENABLED=0
+# Disable both local Go telemetry counters and uploads before compiling gosu.
 RUN --mount=type=cache,target=/root/go/pkg/mod,id=pgsql-docker-gosu-gomod,sharing=locked \
-    go build -trimpath -ldflags '-s -w' -o /out/gosu . \
+    go telemetry off \
+    && go build -trimpath -ldflags '-s -w' -o /out/gosu . \
     && /out/gosu --version
 
 # hadolint ignore=DL3006

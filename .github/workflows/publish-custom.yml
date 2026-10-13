@@ -89,6 +89,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  TRIVY_DISABLE_TELEMETRY: 'true'
+  TRIVY_SKIP_VERSION_CHECK: 'true'
 
 concurrency:
   group: pgsql-image-publish-${{ github.repository }}
@@ -388,12 +390,14 @@ jobs:
           set -euo pipefail
 
           mkdir -p "${TRIVY_CACHE_DIR}"
-          docker pull aquasec/trivy:0.74.0
+          docker pull aquasec/trivy:0.75.0
 
           docker run --rm \
+            -e TRIVY_DISABLE_TELEMETRY=true \
+            -e TRIVY_SKIP_VERSION_CHECK=true \
             -v "${IMAGE_ARCHIVE}:${IMAGE_ARCHIVE}:ro" \
             -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
-            aquasec/trivy:0.74.0 \
+            aquasec/trivy:0.75.0 \
             image \
             --input "${IMAGE_ARCHIVE}" \
             --format json \

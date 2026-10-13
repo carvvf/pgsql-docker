@@ -122,12 +122,49 @@ a checked-out `ragtime-rag-orch`:
 IMAGE_REF=pgsql-custom:local RAGTIME_REPO=../ragtime-rag-orch bash tests/test-postgres-image.sh
 ```
 
-For a local Trivy filesystem, Dockerfile, and image scan, install Trivy and
-run:
+For a local Trivy filesystem, Dockerfile, and image scan, use the same
+Trivy 0.75.0 container as CI; no host Trivy installation is required:
 
 ```bash
-IMAGE_REF=pgsql-custom:local scripts/trivy/scan-image.sh
+IMAGE_REF=pgsql-custom:local bash tools/dev_trivy_scan.sh
 ```
+
+Alternatively, install Trivy 0.75.0 on the host and run
+`IMAGE_REF=pgsql-custom:local scripts/trivy/scan-image.sh`.
+This entrypoint rejects other host versions to keep scans aligned with CI.
+
+## Telemetry policy
+
+The `gosu` builder runs `go telemetry off` before compilation, disabling
+both local toolchain counters and uploads through Go's documented control.
+The same Dockerfile is used locally and in GitHub Actions. The Go toolchain
+is confined to the builder stage. No vendor reporting mechanism was identified
+in the PostgreSQL runtime assembled here; `pg_stat_statements` remains enabled
+and records local database statistics.
+
+All repository Trivy entrypoints disable anonymous usage reporting with
+`TRIVY_DISABLE_TELEMETRY=true` and announcement/version requests with
+`TRIVY_SKIP_VERSION_CHECK=true`. Workflows using `trivy-action` receive these
+settings through workflow environment variables; Docker invocations pass them
+explicitly into the scanner container. The native local script exports both
+settings before invoking Trivy. Scans use Trivy 0.75.0 by default.
+Vulnerability database downloads, security checks, JSON reports, and the
+HIGH/CRITICAL publication gate remain active. These opt-outs do not make
+builds or scans network-free.
+
+The Go opt-out applies to subsequent builds; existing runtime containers do not
+contain the Go toolchain. Repository Dockerfile changes alone do not trigger
+the daily workflow's rebuild decision.
+After integrating the changes into the default branch, request a rebuild:
+
+```bash
+gh workflow run scan-active-image.yml --repo carvvf/pgsql-docker -f force_rebuild=true
+```
+
+The workflow runs the existing build, scan, runtime-test, and publication gates.
+After publication, follow the downstream update procedure above, retaining the
+data volumes. The deliberate failure notification after a clean rebuild remains
+part of that procedure.
 
 ## VS Code tasks
 

@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-TRIVY_IMAGE="${TRIVY_IMAGE:-aquasec/trivy:0.74.0}"
+TRIVY_IMAGE="${TRIVY_IMAGE:-aquasec/trivy:0.75.0}"
 IMAGE_REF="${IMAGE_REF:-pgsql-custom:local}"
 REPORT_SEVERITIES="${REPORT_SEVERITIES:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 FAIL_SEVERITIES="${FAIL_SEVERITIES:-HIGH,CRITICAL}"
@@ -36,6 +36,8 @@ run_trivy() {
     --user "${HOST_UID}:${HOST_GID}" \
     --group-add "${DOCKER_SOCKET_GID}" \
     -e TRIVY_CACHE_DIR=/trivy-cache \
+    -e TRIVY_DISABLE_TELEMETRY=true \
+    -e TRIVY_SKIP_VERSION_CHECK=true \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "${REPO_ROOT}:/workspace:ro" \
     -v "${REPORTS_DIR}:/reports" \

@@ -17,6 +17,8 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  TRIVY_DISABLE_TELEMETRY: 'true'
+  TRIVY_SKIP_VERSION_CHECK: 'true'
 
 permissions:
   contents: read
@@ -174,7 +176,7 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ steps.resolve.outputs.image_ref }}
-          version: v0.74.0
+          version: v0.75.0
           cache: false
           format: json
           output: trivy-report-initial.json
@@ -312,7 +314,7 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ needs.initial_scan.outputs.image_ref }}
-          version: v0.74.0
+          version: v0.75.0
           cache: false
           format: json
           output: trivy-report-final.json
