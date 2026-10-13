@@ -55,6 +55,12 @@ jobs:
           echo 'Forced failure for notification testing.' >&2
           exit 1
 
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Check shared build input resolution
+        run: python3 -m unittest discover -s tests -p test_build_inputs.py
+
       - name: Log in to GHCR
         uses: docker/login-action@v4.0.0
         with:
@@ -70,45 +76,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          docker pull postgres:18
-          upstream_digest="$(docker image inspect postgres:18 --format '{{index .RepoDigests 0}}')"
-          upstream_digest="${upstream_digest##*@}"
-          env_json="$(docker image inspect postgres:18 --format '{{json .Config.Env}}')"
-          pg_version_full="$(jq -r '.[] | select(startswith("PG_VERSION="))' <<<"${env_json}" | cut -d= -f2-)"
-          upstream_version="${pg_version_full%%-*}"
-          upstream_ref="postgres@${upstream_digest}"
-
-          if [[ ! "${upstream_version}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-            echo "Unsupported PostgreSQL version format: ${upstream_version}" >&2
-            exit 1
-          fi
-          source_ref="REL_${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
-          source_revision="$(git ls-remote https://github.com/postgres/postgres.git "refs/tags/${source_ref}^{}" | awk 'NR == 1 { print $1 }')"
-          if [ -z "${source_revision}" ]; then
-            source_revision="$(git ls-remote https://github.com/postgres/postgres.git "refs/tags/${source_ref}" | awk 'NR == 1 { print $1 }')"
-          fi
-
-          gosu_source_ref="$(jq -r '.[] | select(startswith("GOSU_VERSION="))' <<<"${env_json}" | cut -d= -f2-)"
-          gosu_source_revision="$(git ls-remote https://github.com/tianon/gosu.git "refs/tags/${gosu_source_ref}^{}" | awk 'NR == 1 { print $1 }')"
-          if [ -z "${gosu_source_revision}" ]; then
-            gosu_source_revision="$(git ls-remote https://github.com/tianon/gosu.git "refs/tags/${gosu_source_ref}" | awk 'NR == 1 { print $1 }')"
-          fi
-
-          entrypoint_source_commit="$(git ls-remote https://github.com/docker-library/postgres.git refs/heads/master | awk 'NR == 1 { print $1 }')"
-
-          docker pull ubuntu:24.04
-          ubuntu_base_digest="$(docker image inspect ubuntu:24.04 --format '{{index .RepoDigests 0}}')"
-          ubuntu_base_digest="${ubuntu_base_digest##*@}"
-          ubuntu_base_ref="ubuntu@${ubuntu_base_digest}"
-
-          if [[ ! "${upstream_digest}" =~ ^sha256:[a-f0-9]{64}$ ]] \
-            || [[ ! "${source_revision}" =~ ^[a-f0-9]{40}$ ]] \
-            || [[ ! "${gosu_source_revision}" =~ ^[a-f0-9]{40}$ ]] \
-            || [[ ! "${entrypoint_source_commit}" =~ ^[a-f0-9]{40}$ ]] \
-            || [[ ! "${ubuntu_base_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo 'Could not resolve immutable PostgreSQL, gosu, entrypoint, or Ubuntu build inputs.' >&2
-            exit 1
-          fi
+          source tools/lib/build_inputs.sh
+          resolve_build_inputs
 
           owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
           package_name="$(printf '%s' "${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]')"

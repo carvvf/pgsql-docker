@@ -92,17 +92,56 @@ correctly.
 
 ## Local build and validation
 
-Build PostgreSQL 18.6 from source on Ubuntu 24.04:
+Build the PostgreSQL 18 release currently identified by `postgres:18` from
+source on Ubuntu 24.04, using the same input resolver as GitHub Actions:
 
 ```bash
-docker build --pull --no-cache -t pgsql-custom:local .
+bash tools/build_local_image.sh
 ```
 
-CI additionally resolves the immutable commit for the PostgreSQL source tag,
-the `gosu` source tag, and the `docker-library/postgres` entrypoint commit,
-and fails the build when any checked-out source does not match what was
-resolved. OCI labels record all three source revisions, the official-image
-digest used as a release signal, and the Ubuntu runtime-base digest.
+The VS Code `Docker: build local image` task invokes this entrypoint. It pulls
+the official `linux/amd64` image as a release signal, reads `PG_VERSION`,
+`PG_MAJOR`, and `GOSU_VERSION`, resolves the matching PostgreSQL and gosu source
+tags and commits, pins the `docker-library/postgres` master commit for the
+entrypoint scripts, and resolves the Ubuntu 24.04 runtime manifest digest.
+The official PostgreSQL image is not used as the runtime base. All resolved
+values are passed explicitly to the Dockerfile; every source checkout must
+match its expected commit. The entrypoint requires Bash, Docker, Git, and
+network access to Docker Hub and GitHub; no Python environment is needed.
+
+To select a specific release within the supported major version:
+
+```bash
+POSTGRES_SOURCE_REF=REL_18_6 bash tools/build_local_image.sh
+```
+
+`tools/lib/build_inputs.sh` owns the shared resolver used by the local build,
+the standalone build workflow, daily scan, and publication preflight.
+`bash tools/resolve_build_inputs.sh` prints resolved `key=value` outputs without
+compiling or publishing an image. Optional environment inputs are
+`POSTGRES_UPSTREAM_REF`, `POSTGRES_UPSTREAM_VERSION`, `POSTGRES_UPSTREAM_DIGEST`,
+`POSTGRES_SOURCE_REF`, `POSTGRES_SOURCE_REVISION`, `GOSU_SOURCE_REF`,
+`GOSU_SOURCE_REVISION`, `ENTRYPOINT_SOURCE_COMMIT`, `UBUNTU_BASE_IMAGE`, and
+`UBUNTU_BASE_DIGEST`. Version, tag, commit, or digest mismatches abort resolution.
+Gosu defaults to the version recorded in the official PostgreSQL image; an
+explicit release override must resolve to its verified upstream commit.
+Explicit digest references retain their release signal, and an explicit
+entrypoint commit is retained and verified during the Dockerfile checkout.
+
+The resolver rejects `postgres:latest`, references to other majors, and even
+an explicitly pinned digest whose image reports a major other than 18.
+Local builds pass `PG_MAJOR=18` explicitly. This preserves the existing data
+format contract; a major upgrade remains a separate coordinated operation.
+Ubuntu inputs must identify the official 24.04 image.
+
+Local OCI versions use `<postgres-version>-local`; published images retain
+`<postgres-version>-custom.<N>`. Both paths record all three source revisions,
+the official-image digest, and the runtime-base digest. The image version label
+is set explicitly instead of inheriting Ubuntu's `24.04` label. Direct Dockerfile
+builds require verified source arguments; there are no static source-version
+or entrypoint-commit fallbacks. Input parity and provenance do not guarantee
+binary reproducibility across different build times. Publication still requires
+the existing vulnerability and runtime gates.
 
 The `gosu` build uses Go 1.27.2 with the official Linux amd64 archive SHA-256
 verified before extraction. After verifying the upstream `gosu` source, it
@@ -110,7 +149,7 @@ updates `github.com/moby/sys/user` to `v0.4.1` and `golang.org/x/sys` to
 `v0.44.0` to remediate their reported vulnerabilities. These are explicit
 dependency updates to the upstream release, not an unmodified upstream build.
 The archive and module pins replace the Go 1.27.1 and module v0.1.0 inputs
-reported by Trivy; PostgreSQL's source version is unchanged.
+reported by Trivy; these Go dependency updates do not select PostgreSQL's source version.
 
 `build/gosu-dependencies.sum` records the module archive and `go.mod` checksums
 obtained from Go's public checksum database. They are merged into the upstream
@@ -122,10 +161,20 @@ Local and GitHub Actions builds use this same Dockerfile and dependency policy.
 Rebuild the image before scanning it; refreshing Ubuntu packages or rebuilding
 unchanged dependency pins cannot update the Go code embedded in `gosu`.
 
+Run resolver regression tests with Python 3's standard library. Docker and Git
+are simulated; these tests require no daemon, network, or package installs:
+
+```bash
+python3 -m unittest discover -s tests -p test_build_inputs.py
+```
+
+The three build/scan/publish workflows run this check before resolving inputs.
+
 Run the compatibility smoke test. It applies the relevant Ragtime container
 restrictions, runs the real Ragtime bootstrap init flow (vendored as a test
-fixture; see `tests/fixtures/postgres-init`), confirms `pg_stat_statements`
-and the builtin locale provider, restarts the container, verifies
+fixture; see `tests/fixtures/postgres-init`), checks the server version against
+its upstream image label, confirms `pg_stat_statements` and the builtin locale
+provider, restarts the container, verifies
 persistence, and removes the test resources:
 
 ```bash
@@ -189,16 +238,18 @@ part of that procedure.
 The workspace provides these tasks without requiring locally installed lint or
 scanner binaries:
 
-- `Docker: build local image` compiles `pgsql-custom:local` from the default
-  PostgreSQL source release on Ubuntu 24.04.
+- `Docker: build local image` compiles `pgsql-custom:local` from the
+  verified official PostgreSQL 18 release signal on Ubuntu 24.04.
 - `Test: PostgreSQL runtime` builds the image and runs the Ragtime-compatible
   smoke test (prompts for a `ragtime-rag-orch` path, or leave it empty to use
   the vendored fixture).
 - `Trivy: scan CVE` builds the image, runs a pinned Trivy container against
   the repository and local image, writes reports under `reports/trivy`, and
   fails on HIGH or CRITICAL findings.
-- `Test: all` runs Dockerfile, shell, and workflow linting and the runtime
-  test in sequence. Run `Trivy: scan CVE` separately.
+- `Test: build inputs` checks release resolution, provenance, and major-version
+  guards using simulated infrastructure.
+- `Test: all` runs resolver regression tests, Dockerfile, shell, and workflow
+  linting, and the runtime test in sequence. Run `Trivy: scan CVE` separately.
 
 The first Trivy run downloads the vulnerability database into
 `reports/trivy/cache`; later runs reuse it. Delete that directory to force a

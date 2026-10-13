@@ -4,14 +4,9 @@
     {
       "label": "Docker: build local image",
       "type": "shell",
-      "command": "docker",
+      "command": "bash",
       "args": [
-        "build",
-        "--pull",
-        "--no-cache",
-        "-t",
-        "pgsql-custom:local",
-        "."
+        "tools/build_local_image.sh"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -42,7 +37,7 @@
       "label": "Lint: shell scripts",
       "hide": true,
       "type": "shell",
-      "command": "docker run --rm --entrypoint shellcheck -v \"${workspaceFolder}:/workspace:ro\" -w /workspace koalaman/shellcheck-alpine:v0.10.0 --shell=bash tests/test-postgres-image.sh scripts/trivy/scan-image.sh tools/dev_trivy_scan.sh",
+      "command": "docker run --rm --entrypoint shellcheck -v \"${workspaceFolder}:/workspace:ro\" -w /workspace koalaman/shellcheck-alpine:v0.10.0 --shell=bash -x tests/test-postgres-image.sh scripts/trivy/scan-image.sh tools/dev_trivy_scan.sh tools/lib/build_inputs.sh tools/resolve_build_inputs.sh tools/build_local_image.sh",
       "options": {
         "cwd": "${workspaceFolder}",
         "shell": {
@@ -68,6 +63,26 @@
           ]
         }
       },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: build inputs",
+      "hide": true,
+      "type": "shell",
+      "command": "python3",
+      "args": [
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-p",
+        "test_build_inputs.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "test",
       "problemMatcher": []
     },
     {
@@ -117,6 +132,7 @@
       "label": "Test: all",
       "type": "shell",
       "dependsOn": [
+        "Test: build inputs",
         "Lint: Dockerfile",
         "Lint: shell scripts",
         "Lint: GitHub Actions",

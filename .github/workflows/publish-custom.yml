@@ -117,6 +117,12 @@ jobs:
       ubuntu_base_digest: ${{ steps.resolve.outputs.ubuntu_base_digest }}
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Check shared build input resolution
+        run: python3 -m unittest discover -s tests -p test_build_inputs.py
+
       # PostgreSQL's on-disk format is not compatible across major versions
       # (see AGENTS.md "Version and upgrade policy"). Pulling the
       # major-pinned "postgres:18" tag, rather than "postgres:latest",
@@ -127,109 +133,21 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_UPSTREAM_REF: ${{ inputs.postgres_upstream_ref }}
-          INPUT_UPSTREAM_VERSION: ${{ inputs.postgres_upstream_version }}
-          INPUT_UPSTREAM_DIGEST: ${{ inputs.postgres_upstream_digest }}
-          INPUT_SOURCE_REF: ${{ inputs.postgres_source_ref }}
-          INPUT_SOURCE_REVISION: ${{ inputs.postgres_source_revision }}
-          INPUT_GOSU_SOURCE_REF: ${{ inputs.gosu_source_ref }}
-          INPUT_GOSU_SOURCE_REVISION: ${{ inputs.gosu_source_revision }}
-          INPUT_ENTRYPOINT_SOURCE_COMMIT: ${{ inputs.entrypoint_source_commit }}
-          INPUT_UBUNTU_BASE_REF: ${{ inputs.ubuntu_base_ref }}
-          INPUT_UBUNTU_BASE_DIGEST: ${{ inputs.ubuntu_base_digest }}
+          POSTGRES_UPSTREAM_REF: ${{ inputs.postgres_upstream_ref }}
+          POSTGRES_UPSTREAM_VERSION: ${{ inputs.postgres_upstream_version }}
+          POSTGRES_UPSTREAM_DIGEST: ${{ inputs.postgres_upstream_digest }}
+          POSTGRES_SOURCE_REF: ${{ inputs.postgres_source_ref }}
+          POSTGRES_SOURCE_REVISION: ${{ inputs.postgres_source_revision }}
+          GOSU_SOURCE_REF: ${{ inputs.gosu_source_ref }}
+          GOSU_SOURCE_REVISION: ${{ inputs.gosu_source_revision }}
+          ENTRYPOINT_SOURCE_COMMIT: ${{ inputs.entrypoint_source_commit }}
+          UBUNTU_BASE_IMAGE: ${{ inputs.ubuntu_base_ref }}
+          UBUNTU_BASE_DIGEST: ${{ inputs.ubuntu_base_digest }}
         run: |
           set -euo pipefail
 
-          upstream_ref="${INPUT_UPSTREAM_REF}"
-          upstream_version="${INPUT_UPSTREAM_VERSION}"
-          upstream_digest="${INPUT_UPSTREAM_DIGEST}"
-          gosu_source_ref="${INPUT_GOSU_SOURCE_REF}"
-          if [ -z "${upstream_ref}" ] || [ -z "${gosu_source_ref}" ]; then
-            docker pull postgres:18
-            env_json="$(docker image inspect postgres:18 --format '{{json .Config.Env}}')"
-            pg_version_full="$(jq -r '.[] | select(startswith("PG_VERSION="))' <<<"${env_json}" | cut -d= -f2-)"
-            if [ -z "${upstream_ref}" ]; then
-              upstream_digest="$(docker image inspect postgres:18 --format '{{index .RepoDigests 0}}')"
-              upstream_digest="${upstream_digest##*@}"
-              upstream_version="${pg_version_full%%-*}"
-              upstream_ref="postgres@${upstream_digest}"
-            fi
-            if [ -z "${gosu_source_ref}" ]; then
-              gosu_source_ref="$(jq -r '.[] | select(startswith("GOSU_VERSION="))' <<<"${env_json}" | cut -d= -f2-)"
-            fi
-          fi
-
-          if [ -z "${upstream_version}" ] || [ -z "${upstream_digest}" ] || [ "${upstream_digest}" = 'unknown' ]; then
-            echo 'An official PostgreSQL version and immutable manifest digest are required.' >&2
-            exit 1
-          fi
-          if [[ ! "${upstream_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "Invalid PostgreSQL manifest digest: ${upstream_digest}" >&2
-            exit 1
-          fi
-          if [[ ! "${upstream_version}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-            echo "Unsupported PostgreSQL version format: ${upstream_version}" >&2
-            exit 1
-          fi
-          pg_major="${BASH_REMATCH[1]}"
-          pg_minor="${BASH_REMATCH[2]}"
-
-          source_ref="${INPUT_SOURCE_REF:-REL_${pg_major}_${pg_minor}}"
-          source_revision_from_tag="$(git ls-remote https://github.com/postgres/postgres.git "refs/tags/${source_ref}^{}" | awk 'NR == 1 { print $1 }')"
-          if [ -z "${source_revision_from_tag}" ]; then
-            source_revision_from_tag="$(git ls-remote https://github.com/postgres/postgres.git "refs/tags/${source_ref}" | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ ! "${source_revision_from_tag}" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "Could not resolve PostgreSQL source tag: ${source_ref}" >&2
-            exit 1
-          fi
-          source_revision="${INPUT_SOURCE_REVISION:-${source_revision_from_tag}}"
-          if [ "${source_revision}" != "${source_revision_from_tag}" ]; then
-            echo "Source revision does not match ${source_ref}: ${source_revision}" >&2
-            exit 1
-          fi
-
-          gosu_source_revision_from_tag="$(git ls-remote https://github.com/tianon/gosu.git "refs/tags/${gosu_source_ref}^{}" | awk 'NR == 1 { print $1 }')"
-          if [ -z "${gosu_source_revision_from_tag}" ]; then
-            gosu_source_revision_from_tag="$(git ls-remote https://github.com/tianon/gosu.git "refs/tags/${gosu_source_ref}" | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ ! "${gosu_source_revision_from_tag}" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "Could not resolve gosu source tag: ${gosu_source_ref}" >&2
-            exit 1
-          fi
-          gosu_source_revision="${INPUT_GOSU_SOURCE_REVISION:-${gosu_source_revision_from_tag}}"
-          if [ "${gosu_source_revision}" != "${gosu_source_revision_from_tag}" ]; then
-            echo "gosu source revision does not match ${gosu_source_ref}: ${gosu_source_revision}" >&2
-            exit 1
-          fi
-
-          # docker-library/postgres does not tag releases; pin the current
-          # master commit instead (or the caller-supplied override).
-          entrypoint_source_commit="${INPUT_ENTRYPOINT_SOURCE_COMMIT}"
-          if [ -z "${entrypoint_source_commit}" ]; then
-            entrypoint_source_commit="$(git ls-remote https://github.com/docker-library/postgres.git refs/heads/master | awk 'NR == 1 { print $1 }')"
-          fi
-          if [[ ! "${entrypoint_source_commit}" =~ ^[a-f0-9]{40}$ ]]; then
-            echo "Could not resolve docker-library/postgres entrypoint commit." >&2
-            exit 1
-          fi
-
-          ubuntu_base_ref="${INPUT_UBUNTU_BASE_REF}"
-          ubuntu_base_digest="${INPUT_UBUNTU_BASE_DIGEST}"
-          if [ -z "${ubuntu_base_ref}" ]; then
-            docker pull ubuntu:24.04
-            ubuntu_base_digest="$(docker image inspect ubuntu:24.04 --format '{{index .RepoDigests 0}}')"
-            ubuntu_base_digest="${ubuntu_base_digest##*@}"
-            ubuntu_base_ref="ubuntu@${ubuntu_base_digest}"
-          fi
-          if [ -z "${ubuntu_base_digest}" ] || [ "${ubuntu_base_digest}" = 'unknown' ]; then
-            echo 'An immutable Ubuntu runtime manifest digest is required.' >&2
-            exit 1
-          fi
-          if [[ ! "${ubuntu_base_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-            echo "Invalid Ubuntu manifest digest: ${ubuntu_base_digest}" >&2
-            exit 1
-          fi
+          source tools/lib/build_inputs.sh
+          resolve_build_inputs
 
           owner="${GITHUB_REPOSITORY_OWNER}"
           owner_lc="$(printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]')"
@@ -354,6 +272,7 @@ jobs:
             POSTGRES_SOURCE_REF=${{ needs.preflight.outputs.source_ref }}
             POSTGRES_SOURCE_REVISION=${{ needs.preflight.outputs.source_revision }}
             POSTGRES_UPSTREAM_VERSION=${{ needs.preflight.outputs.upstream_version }}
+            POSTGRES_IMAGE_VERSION=${{ needs.preflight.outputs.version }}
             POSTGRES_UPSTREAM_DIGEST=${{ needs.preflight.outputs.upstream_digest }}
             GOSU_SOURCE_REF=${{ needs.preflight.outputs.gosu_source_ref }}
             GOSU_SOURCE_REVISION=${{ needs.preflight.outputs.gosu_source_revision }}

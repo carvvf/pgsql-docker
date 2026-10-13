@@ -9,25 +9,25 @@ on:
         required: false
         default: ''
       postgres_source_ref:
-        description: PostgreSQL source tag to compile (e.g. REL_18_6)
+        description: Optional PostgreSQL major 18 release tag; empty follows postgres:18
         required: false
-        default: REL_18_6
+        default: ''
       postgres_source_revision:
         description: Optional immutable commit expected for the source tag
         required: false
         default: ''
       postgres_upstream_version:
-        description: PostgreSQL version recorded in image labels (e.g. 18.6)
+        description: Optional PostgreSQL major 18 version; verified against the official image
         required: false
-        default: 18.6
+        default: ''
       postgres_upstream_digest:
         description: Optional postgres:18 manifest digest for provenance
         required: false
-        default: unknown
+        default: ''
       gosu_source_ref:
-        description: gosu source tag to compile
+        description: Optional gosu release tag; empty uses the official image metadata
         required: false
-        default: '1.19'
+        default: ''
       gosu_source_revision:
         description: Optional immutable commit expected for the gosu tag
         required: false
@@ -39,11 +39,11 @@ on:
       ubuntu_base_ref:
         description: Ubuntu runtime reference; prefer an immutable digest
         required: false
-        default: ubuntu:24.04
+        default: ''
       ubuntu_base_digest:
         description: Optional Ubuntu manifest digest for provenance
         required: false
-        default: unknown
+        default: ''
   workflow_call:
     inputs:
       image_tag_suffix:
@@ -92,8 +92,25 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
 
+      - name: Check shared build input resolution
+        run: python3 -m unittest discover -s tests -p test_build_inputs.py
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.0.0
+
+      - name: Resolve verified build inputs
+        id: build_inputs
+        env:
+          POSTGRES_SOURCE_REF: ${{ inputs.postgres_source_ref }}
+          POSTGRES_SOURCE_REVISION: ${{ inputs.postgres_source_revision }}
+          POSTGRES_UPSTREAM_VERSION: ${{ inputs.postgres_upstream_version }}
+          POSTGRES_UPSTREAM_DIGEST: ${{ inputs.postgres_upstream_digest }}
+          GOSU_SOURCE_REF: ${{ inputs.gosu_source_ref }}
+          GOSU_SOURCE_REVISION: ${{ inputs.gosu_source_revision }}
+          ENTRYPOINT_SOURCE_COMMIT: ${{ inputs.entrypoint_source_commit }}
+          UBUNTU_BASE_IMAGE: ${{ inputs.ubuntu_base_ref }}
+          UBUNTU_BASE_DIGEST: ${{ inputs.ubuntu_base_digest }}
+        run: bash tools/resolve_build_inputs.sh >> "${GITHUB_OUTPUT}"
 
       - name: Compute local image tag
         run: |
@@ -116,15 +133,16 @@ jobs:
           cache-from: type=gha,scope=pgsql-source-amd64
           cache-to: type=gha,mode=max,scope=pgsql-source-amd64
           build-args: |
-            POSTGRES_SOURCE_REF=${{ inputs.postgres_source_ref }}
-            POSTGRES_SOURCE_REVISION=${{ inputs.postgres_source_revision }}
-            POSTGRES_UPSTREAM_VERSION=${{ inputs.postgres_upstream_version }}
-            POSTGRES_UPSTREAM_DIGEST=${{ inputs.postgres_upstream_digest }}
-            GOSU_SOURCE_REF=${{ inputs.gosu_source_ref }}
-            GOSU_SOURCE_REVISION=${{ inputs.gosu_source_revision }}
-            ENTRYPOINT_SOURCE_COMMIT=${{ inputs.entrypoint_source_commit }}
-            UBUNTU_BASE_IMAGE=${{ inputs.ubuntu_base_ref }}
-            UBUNTU_BASE_DIGEST=${{ inputs.ubuntu_base_digest }}
+            POSTGRES_SOURCE_REF=${{ steps.build_inputs.outputs.source_ref }}
+            POSTGRES_SOURCE_REVISION=${{ steps.build_inputs.outputs.source_revision }}
+            POSTGRES_UPSTREAM_VERSION=${{ steps.build_inputs.outputs.upstream_version }}
+            POSTGRES_IMAGE_VERSION=${{ steps.build_inputs.outputs.upstream_version }}-local
+            POSTGRES_UPSTREAM_DIGEST=${{ steps.build_inputs.outputs.upstream_digest }}
+            GOSU_SOURCE_REF=${{ steps.build_inputs.outputs.gosu_source_ref }}
+            GOSU_SOURCE_REVISION=${{ steps.build_inputs.outputs.gosu_source_revision }}
+            ENTRYPOINT_SOURCE_COMMIT=${{ steps.build_inputs.outputs.entrypoint_source_commit }}
+            UBUNTU_BASE_IMAGE=${{ steps.build_inputs.outputs.ubuntu_base_ref }}
+            UBUNTU_BASE_DIGEST=${{ steps.build_inputs.outputs.ubuntu_base_digest }}
             SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
             CACHEBUST=${{ github.run_id }}
 

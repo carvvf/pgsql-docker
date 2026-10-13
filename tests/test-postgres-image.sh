@@ -40,6 +40,12 @@ if ! docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
   exit 2
 fi
 
+EXPECTED_VERSION="$(docker image inspect "${IMAGE_REF}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.postgres.upstream.version"}}')"
+if [[ ! "${EXPECTED_VERSION}" =~ ^18\.[0-9]+$ ]]; then
+  echo "The image must record its verified PostgreSQL major 18 version. Rebuild it with tools/build_local_image.sh." >&2
+  exit 1
+fi
+
 cleanup() {
   local exit_status=$?
   if [ "${exit_status}" -ne 0 ]; then
@@ -111,6 +117,12 @@ docker run -d \
   >/dev/null
 
 wait_for_healthy
+
+SERVER_VERSION="$(docker exec "${CONTAINER_NAME}" gosu postgres psql -qtAX -d "${POSTGRES_DB}" -c 'show server_version')"
+if [ "${SERVER_VERSION}" != "${EXPECTED_VERSION}" ]; then
+  echo "PostgreSQL server version ${SERVER_VERSION} does not match image metadata ${EXPECTED_VERSION}." >&2
+  exit 1
+fi
 
 # The Ragtime bootstrap script must have created the owner/app roles and the
 # pg_stat_statements extension (see postgres-init/10-ragtime-bootstrap.sh).

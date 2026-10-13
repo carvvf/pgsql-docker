@@ -1,16 +1,16 @@
 # syntax=docker/dockerfile:1
 # The PostgreSQL release and its two auxiliary sources (gosu, and the
-# docker-library/postgres entrypoint scripts) are resolved by CI against
-# postgres:18, tianon/gosu's latest release, and docker-library/postgres's
+# docker-library/postgres entrypoint scripts) are resolved locally and in CI
+# against postgres:18, its recorded gosu release, and docker-library/postgres's
 # current master, respectively. See AGENTS.md "Security and update policy".
 ARG POSTGRES_SOURCE_REPOSITORY=https://github.com/postgres/postgres.git
-ARG POSTGRES_SOURCE_REF=REL_18_6
-ARG POSTGRES_SOURCE_REVISION=
+ARG POSTGRES_SOURCE_REF
+ARG POSTGRES_SOURCE_REVISION
 ARG GOSU_SOURCE_REPOSITORY=https://github.com/tianon/gosu.git
-ARG GOSU_SOURCE_REF=1.19
-ARG GOSU_SOURCE_REVISION=
+ARG GOSU_SOURCE_REF
+ARG GOSU_SOURCE_REVISION
 ARG ENTRYPOINT_SOURCE_REPOSITORY=https://github.com/docker-library/postgres.git
-ARG ENTRYPOINT_SOURCE_COMMIT=4a1f78ff7e7a6e7ecb6a584c540c07946ad66e80
+ARG ENTRYPOINT_SOURCE_COMMIT
 ARG UBUNTU_BASE_IMAGE=ubuntu:24.04
 ARG PG_MAJOR=18
 # ubuntu:24.04's "golang-go" apt package is frozen at Go 1.22 (from the
@@ -39,36 +39,42 @@ ARG GOSU_SOURCE_REF
 ARG GOSU_SOURCE_REVISION
 ARG ENTRYPOINT_SOURCE_REPOSITORY
 ARG ENTRYPOINT_SOURCE_COMMIT
+ARG PG_MAJOR
 
 # hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch "${POSTGRES_SOURCE_REF}" \
+RUN test "${PG_MAJOR}" = 18 \
+    && case "${POSTGRES_SOURCE_REF}" in REL_18_*) ;; *) echo 'A PostgreSQL major 18 release tag is required.' >&2; exit 1 ;; esac \
+    && test -n "${POSTGRES_SOURCE_REF}" \
+    && test -n "${POSTGRES_SOURCE_REVISION}" \
+    && git clone --depth 1 --branch "${POSTGRES_SOURCE_REF}" \
       "${POSTGRES_SOURCE_REPOSITORY}" /source/postgres \
     && actual_revision="$(git -C /source/postgres rev-parse HEAD)" \
-    && if [ -n "${POSTGRES_SOURCE_REVISION}" ]; then \
-         test "${actual_revision}" = "${POSTGRES_SOURCE_REVISION}"; \
-       fi \
+    && test "${actual_revision}" = "${POSTGRES_SOURCE_REVISION}" \
     && printf '%s\n' "${actual_revision}" > /source/postgres-revision
 
-RUN git clone --depth 1 --branch "${GOSU_SOURCE_REF}" \
+RUN test -n "${GOSU_SOURCE_REF}" \
+    && test -n "${GOSU_SOURCE_REVISION}" \
+    && git clone --depth 1 --branch "${GOSU_SOURCE_REF}" \
       "${GOSU_SOURCE_REPOSITORY}" /source/gosu \
     && actual_revision="$(git -C /source/gosu rev-parse HEAD)" \
-    && if [ -n "${GOSU_SOURCE_REVISION}" ]; then \
-         test "${actual_revision}" = "${GOSU_SOURCE_REVISION}"; \
-       fi \
+    && test "${actual_revision}" = "${GOSU_SOURCE_REVISION}" \
     && printf '%s\n' "${actual_revision}" > /source/gosu-revision
 
 # docker-library/postgres does not tag releases; pin by commit instead of a
 # ref, and verify the checked-out commit matches it exactly.
-RUN mkdir -p /source/docker-library-postgres \
+RUN test -n "${ENTRYPOINT_SOURCE_COMMIT}" \
+    && mkdir -p /source/docker-library-postgres \
     && git -C /source/docker-library-postgres init -q \
     && git -C /source/docker-library-postgres remote add origin "${ENTRYPOINT_SOURCE_REPOSITORY}" \
     && git -C /source/docker-library-postgres fetch -q --depth 1 origin "${ENTRYPOINT_SOURCE_COMMIT}" \
     && git -C /source/docker-library-postgres checkout -q "${ENTRYPOINT_SOURCE_COMMIT}" \
-    && printf '%s\n' "${ENTRYPOINT_SOURCE_COMMIT}" > /source/entrypoint-revision
+    && actual_revision="$(git -C /source/docker-library-postgres rev-parse HEAD)" \
+    && test "${actual_revision}" = "${ENTRYPOINT_SOURCE_COMMIT}" \
+    && printf '%s\n' "${actual_revision}" > /source/entrypoint-revision
 
 # hadolint ignore=DL3006
 FROM ${UBUNTU_BASE_IMAGE} AS gosu-builder
@@ -165,6 +171,7 @@ ARG POSTGRES_SOURCE_REF
 ARG POSTGRES_SOURCE_REVISION
 ARG POSTGRES_UPSTREAM_VERSION=unknown
 ARG POSTGRES_UPSTREAM_DIGEST=unknown
+ARG POSTGRES_IMAGE_VERSION
 ARG GOSU_SOURCE_REPOSITORY
 ARG GOSU_SOURCE_REF
 ARG GOSU_SOURCE_REVISION
@@ -180,6 +187,7 @@ LABEL org.opencontainers.image.description="PostgreSQL rebuilt from verified sou
 LABEL org.opencontainers.image.documentation="${SOURCE_REPOSITORY}"
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}"
 LABEL org.opencontainers.image.url="${SOURCE_REPOSITORY}"
+LABEL org.opencontainers.image.version="${POSTGRES_IMAGE_VERSION}"
 LABEL io.github.carvvf.pgsql-docker.postgres.source.repository="${POSTGRES_SOURCE_REPOSITORY}"
 LABEL io.github.carvvf.pgsql-docker.postgres.source.ref="${POSTGRES_SOURCE_REF}"
 LABEL io.github.carvvf.pgsql-docker.postgres.source.revision="${POSTGRES_SOURCE_REVISION}"
