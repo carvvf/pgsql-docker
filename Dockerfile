@@ -21,8 +21,8 @@ ARG PG_MAJOR=18
 # checksum-verified upstream Go toolchain instead of the distro package
 # avoids shipping that stale stdlib. Re-verify this pin against
 # https://go.dev/dl/?mode=json when bumping.
-ARG GO_TOOLCHAIN_VERSION=1.27.1
-ARG GO_TOOLCHAIN_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+ARG GO_TOOLCHAIN_VERSION=1.27.2
+ARG GO_TOOLCHAIN_SHA256=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
 
 # All three sources are resolved on the same base as the runtime image, not a
 # separate build distro: the compiled `postgres`/`psql` binaries dynamically
@@ -87,12 +87,19 @@ RUN curl --fail --silent --show-error --location \
     && rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 COPY --from=source /source/gosu /source/gosu
+COPY build/gosu-dependencies.sum /tmp/gosu-dependencies.sum
 WORKDIR /source/gosu
-ENV CGO_ENABLED=0
+ENV CGO_ENABLED=0 \
+    GOTOOLCHAIN=local \
+    GOSUMDB=sum.golang.org
 # Disable both local Go telemetry counters and uploads before compiling gosu.
+# Upgrade vulnerable upstream module pins using committed Go module checksums.
 RUN --mount=type=cache,target=/root/go/pkg/mod,id=pgsql-docker-gosu-gomod,sharing=locked \
     go telemetry off \
-    && go build -trimpath -ldflags '-s -w' -o /out/gosu . \
+    && cat /tmp/gosu-dependencies.sum >> go.sum \
+    && go get github.com/moby/sys/user@v0.4.1 golang.org/x/sys@v0.44.0 \
+    && go mod verify \
+    && go build -mod=readonly -trimpath -ldflags '-s -w' -o /out/gosu . \
     && /out/gosu --version
 
 # hadolint ignore=DL3006

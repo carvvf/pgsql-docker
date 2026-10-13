@@ -104,6 +104,24 @@ and fails the build when any checked-out source does not match what was
 resolved. OCI labels record all three source revisions, the official-image
 digest used as a release signal, and the Ubuntu runtime-base digest.
 
+The `gosu` build uses Go 1.27.2 with the official Linux amd64 archive SHA-256
+verified before extraction. After verifying the upstream `gosu` source, it
+updates `github.com/moby/sys/user` to `v0.4.1` and `golang.org/x/sys` to
+`v0.44.0` to remediate their reported vulnerabilities. These are explicit
+dependency updates to the upstream release, not an unmodified upstream build.
+The archive and module pins replace the Go 1.27.1 and module v0.1.0 inputs
+reported by Trivy; PostgreSQL's source version is unchanged.
+
+`build/gosu-dependencies.sum` records the module archive and `go.mod` checksums
+obtained from Go's public checksum database. They are merged into the upstream
+`go.sum` before updating dependencies. Go checksum authentication remains
+enabled, `go mod verify` checks the module cache, and `go build -mod=readonly`
+prevents the compilation step from modifying dependency requirements.
+`GOTOOLCHAIN=local` keeps compilation on the checksum-verified toolchain.
+Local and GitHub Actions builds use this same Dockerfile and dependency policy.
+Rebuild the image before scanning it; refreshing Ubuntu packages or rebuilding
+unchanged dependency pins cannot update the Go code embedded in `gosu`.
+
 Run the compatibility smoke test. It applies the relevant Ragtime container
 restrictions, runs the real Ragtime bootstrap init flow (vendored as a test
 fixture; see `tests/fixtures/postgres-init`), confirms `pg_stat_statements`
