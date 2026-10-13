@@ -3,7 +3,8 @@ run-name: Daily PostgreSQL source-build scan
 
 on:
   schedule:
-    - cron: '0 12 * * *'
+    # UTC schedule; Europe/Rome: 02:57 CET / 03:57 CEST.
+    - cron: '57 1 * * *'
   workflow_dispatch:
     inputs:
       force_rebuild:
