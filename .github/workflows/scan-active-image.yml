@@ -27,6 +27,17 @@ permissions:
   contents: read
   packages: read
 
+# Serializes the whole decision-to-publication sequence of daily, manual and
+# push-triggered runs: a run that starts while another is in progress waits and
+# then sees what it published, so both cannot decide to rebuild the same commit.
+# GitHub keeps one pending run per group; a newer one replaces it, and any run
+# evaluates every rebuild signal at the current master head. The group must
+# differ from publish-custom.yml's, which this workflow calls, and the
+# rebuild-on-push.yml caller must not declare it, or GitHub reports a deadlock.
+concurrency:
+  group: pgsql-image-scan-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   initial_scan:
     runs-on: ubuntu-latest

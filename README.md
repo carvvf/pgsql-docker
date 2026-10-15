@@ -228,7 +228,12 @@ workflow with the same gates. The image records the commit of this repository it
 was built from (`io.github.carvvf.pgsql-docker.repository.revision`), and both
 workflows rebuild when the active image carries another commit, also when the
 upstream version and runtime base are unchanged. Documentation-only commits are
-included. To rebuild without a new commit, request one manually:
+included. Daily, manual and push-triggered runs of `scan-active-image.yml` are
+serialized, so two of them never both rebuild the same commit: a run started
+while another is in progress waits, and GitHub keeps only the most recent waiting
+run. A waiting manual `force_rebuild` replaced this way must be requested again.
+A `publish-custom.yml` run started directly is serialized only with other
+publications. To rebuild without a new commit, request one manually:
 
 ```bash
 gh workflow run scan-active-image.yml --repo carvvf/pgsql-docker -f force_rebuild=true
