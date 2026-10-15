@@ -155,8 +155,60 @@ jobs:
             echo "- Packaging repository: ${GITHUB_SHA} (changed: ${repository_changed})"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Decide rebuild from build inputs
+        id: input_decision
+        env:
+          ACTIVE_EXISTS: ${{ steps.resolve.outputs.active_exists }}
+          SOURCE_CHANGED: ${{ steps.resolve.outputs.source_changed }}
+          GOSU_CHANGED: ${{ steps.resolve.outputs.gosu_changed }}
+          ENTRYPOINT_CHANGED: ${{ steps.resolve.outputs.entrypoint_changed }}
+          UBUNTU_BASE_CHANGED: ${{ steps.resolve.outputs.ubuntu_base_changed }}
+          REPOSITORY_CHANGED: ${{ steps.resolve.outputs.repository_changed }}
+          FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
+        run: |
+          set -euo pipefail
+
+          # Each of these signals requires a rebuild whatever the active image's
+          # findings are, so the active image is scanned only when none is
+          # present. The candidate and the republished latest tag are scanned in
+          # every rebuild.
+          reasons=()
+          if [ "${ACTIVE_EXISTS}" != 'true' ]; then
+            reasons+=('GHCR image bootstrap')
+          fi
+          if [ "${SOURCE_CHANGED}" = 'true' ]; then
+            reasons+=('PostgreSQL source revision changed')
+          fi
+          if [ "${GOSU_CHANGED}" = 'true' ]; then
+            reasons+=('gosu source revision changed')
+          fi
+          if [ "${ENTRYPOINT_CHANGED}" = 'true' ]; then
+            reasons+=('entrypoint source commit changed')
+          fi
+          if [ "${UBUNTU_BASE_CHANGED}" = 'true' ]; then
+            reasons+=('Ubuntu runtime-base digest changed')
+          fi
+          if [ "${REPOSITORY_CHANGED}" = 'true' ]; then
+            reasons+=('packaging repository commit changed')
+          fi
+          if [ "${FORCE_REBUILD}" = 'true' ]; then
+            reasons+=('manual force_rebuild input')
+          fi
+
+          required=false
+          reason_text=''
+          if [ "${#reasons[@]}" -gt 0 ]; then
+            required=true
+            reason_text="$(IFS='; '; echo "${reasons[*]}")"
+          fi
+
+          {
+            echo "required=${required}"
+            echo "reasons=${reason_text}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Scan active image with Trivy
-        if: steps.resolve.outputs.active_exists == 'true'
+        if: steps.input_decision.outputs.required == 'false'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ steps.resolve.outputs.image_ref }}
@@ -171,80 +223,42 @@ jobs:
       - name: Summarize rebuild decision
         id: summary
         env:
-          ACTIVE_EXISTS: ${{ steps.resolve.outputs.active_exists }}
-          SOURCE_CHANGED: ${{ steps.resolve.outputs.source_changed }}
-          GOSU_CHANGED: ${{ steps.resolve.outputs.gosu_changed }}
-          ENTRYPOINT_CHANGED: ${{ steps.resolve.outputs.entrypoint_changed }}
-          UBUNTU_BASE_CHANGED: ${{ steps.resolve.outputs.ubuntu_base_changed }}
-          REPOSITORY_CHANGED: ${{ steps.resolve.outputs.repository_changed }}
-          FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
+          INPUT_REBUILD_REQUIRED: ${{ steps.input_decision.outputs.required }}
+          INPUT_REASONS: ${{ steps.input_decision.outputs.reasons }}
         run: |
           set -euo pipefail
 
-          critical_count=0
-          high_count=0
           has_findings=false
-          needs_rebuild=false
-          reasons=()
+          needs_rebuild="${INPUT_REBUILD_REQUIRED}"
+          reason_text="${INPUT_REASONS:-none}"
+          critical_text='not scanned (rebuild already required)'
+          high_text="${critical_text}"
 
-          if [ "${ACTIVE_EXISTS}" = 'true' ]; then
+          if [ "${INPUT_REBUILD_REQUIRED}" != 'true' ]; then
             if [ ! -f trivy-report-initial.json ]; then
               echo 'Trivy report for the active image was not generated.' >&2
               exit 1
             fi
             critical_count="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' trivy-report-initial.json)"
             high_count="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' trivy-report-initial.json)"
+            critical_text="${critical_count}"
+            high_text="${high_count}"
             if [ "${critical_count}" -gt 0 ] || [ "${high_count}" -gt 0 ]; then
               has_findings=true
               needs_rebuild=true
-              reasons+=('HIGH/CRITICAL findings in active image')
+              reason_text='HIGH/CRITICAL findings in active image'
             fi
-          else
-            needs_rebuild=true
-            reasons+=('GHCR image bootstrap')
-          fi
-
-          if [ "${SOURCE_CHANGED}" = 'true' ]; then
-            needs_rebuild=true
-            reasons+=('PostgreSQL source revision changed')
-          fi
-          if [ "${GOSU_CHANGED}" = 'true' ]; then
-            needs_rebuild=true
-            reasons+=('gosu source revision changed')
-          fi
-          if [ "${ENTRYPOINT_CHANGED}" = 'true' ]; then
-            needs_rebuild=true
-            reasons+=('entrypoint source commit changed')
-          fi
-          if [ "${UBUNTU_BASE_CHANGED}" = 'true' ]; then
-            needs_rebuild=true
-            reasons+=('Ubuntu runtime-base digest changed')
-          fi
-          if [ "${REPOSITORY_CHANGED}" = 'true' ]; then
-            needs_rebuild=true
-            reasons+=('packaging repository commit changed')
-          fi
-          if [ "${FORCE_REBUILD}" = 'true' ]; then
-            needs_rebuild=true
-            reasons+=('manual force_rebuild input')
-          fi
-
-          reason_text='none'
-          if [ "${#reasons[@]}" -gt 0 ]; then
-            reason_text="$(IFS='; '; echo "${reasons[*]}")"
           fi
 
           {
-            echo "critical_count=${critical_count}"
-            echo "high_count=${high_count}"
             echo "has_findings=${has_findings}"
             echo "needs_rebuild=${needs_rebuild}"
           } >> "${GITHUB_OUTPUT}"
 
           {
             echo '## Initial Trivy result'
-            echo "- CRITICAL: ${critical_count}"
-            echo "- HIGH: ${high_count}"
+            echo "- CRITICAL: ${critical_text}"
+            echo "- HIGH: ${high_text}"
             echo "- Rebuild required: ${needs_rebuild}"
             echo "- Reason: ${reason_text}"
           } >> "${GITHUB_STEP_SUMMARY}"
