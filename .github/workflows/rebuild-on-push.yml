@@ -1,0 +1,25 @@
+name: Rebuild on master push
+run-name: Rebuild for master commit ${{ github.sha }}
+
+# Every push to master publishes an image built from the pushed commit, also
+# when the upstream version and runtime base are unchanged. The daily scan
+# workflow is reused as is: its packaging-repository revision check sees the new
+# commit and runs the existing build, Trivy, runtime-test, publication, final
+# scan and downstream-notification gates.
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  rebuild:
+    uses: ./.github/workflows/scan-active-image.yml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    secrets: inherit

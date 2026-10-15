@@ -15,6 +15,8 @@ on:
         description: Force a workflow failure to test GitHub notifications
         required: false
         default: 'false'
+  # Called by rebuild-on-push.yml after every push to master.
+  workflow_call:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -45,6 +47,7 @@ jobs:
       gosu_changed: ${{ steps.resolve.outputs.gosu_changed }}
       entrypoint_changed: ${{ steps.resolve.outputs.entrypoint_changed }}
       ubuntu_base_changed: ${{ steps.resolve.outputs.ubuntu_base_changed }}
+      repository_changed: ${{ steps.resolve.outputs.repository_changed }}
       has_findings: ${{ steps.summary.outputs.has_findings }}
       needs_rebuild: ${{ steps.summary.outputs.needs_rebuild }}
 
@@ -87,6 +90,7 @@ jobs:
           gosu_changed=true
           entrypoint_changed=true
           ubuntu_base_changed=true
+          repository_changed=true
 
           if docker pull "${image_ref}"; then
             active_exists=true
@@ -105,6 +109,14 @@ jobs:
             fi
             if [ "${active_ubuntu_base_digest}" = "${ubuntu_base_digest}" ]; then
               ubuntu_base_changed=false
+            fi
+            # Commit of this repository the active image was built from. A
+            # different commit (including an image published before this label
+            # existed) means the Dockerfile, scripts or workflows may have
+            # changed, so the image is rebuilt even with unchanged upstream inputs.
+            active_repository_revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.repository.revision"}}')"
+            if [ "${active_repository_revision}" = "${GITHUB_SHA}" ]; then
+              repository_changed=false
             fi
           else
             echo "Active image is unavailable: ${image_ref}" >&2
@@ -128,6 +140,7 @@ jobs:
             echo "gosu_changed=${gosu_changed}"
             echo "entrypoint_changed=${entrypoint_changed}"
             echo "ubuntu_base_changed=${ubuntu_base_changed}"
+            echo "repository_changed=${repository_changed}"
           } >> "${GITHUB_OUTPUT}"
 
           {
@@ -139,6 +152,7 @@ jobs:
             echo "- gosu source: ${gosu_source_ref}@${gosu_source_revision} (changed: ${gosu_changed})"
             echo "- Entrypoint source: docker-library/postgres@${entrypoint_source_commit} (changed: ${entrypoint_changed})"
             echo "- Ubuntu runtime base: ${ubuntu_base_ref} (changed: ${ubuntu_base_changed})"
+            echo "- Packaging repository: ${GITHUB_SHA} (changed: ${repository_changed})"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Scan active image with Trivy
@@ -162,6 +176,7 @@ jobs:
           GOSU_CHANGED: ${{ steps.resolve.outputs.gosu_changed }}
           ENTRYPOINT_CHANGED: ${{ steps.resolve.outputs.entrypoint_changed }}
           UBUNTU_BASE_CHANGED: ${{ steps.resolve.outputs.ubuntu_base_changed }}
+          REPOSITORY_CHANGED: ${{ steps.resolve.outputs.repository_changed }}
           FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
         run: |
           set -euo pipefail
@@ -204,6 +219,10 @@ jobs:
           if [ "${UBUNTU_BASE_CHANGED}" = 'true' ]; then
             needs_rebuild=true
             reasons+=('Ubuntu runtime-base digest changed')
+          fi
+          if [ "${REPOSITORY_CHANGED}" = 'true' ]; then
+            needs_rebuild=true
+            reasons+=('packaging repository commit changed')
           fi
           if [ "${FORCE_REBUILD}" = 'true' ]; then
             needs_rebuild=true

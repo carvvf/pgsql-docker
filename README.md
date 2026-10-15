@@ -11,7 +11,8 @@ Its final runtime base is `ubuntu:24.04`.
 Its daily GitHub Actions workflow resolves the official-image manifest digest,
 the matching PostgreSQL source tag and commit, the pinned `gosu` and
 `docker-library/postgres` entrypoint-script sources, and the Ubuntu runtime
-manifest digest. It rebuilds when any of these change, scans the candidate
+manifest digest. It rebuilds when any of these change or when the active image
+was built from another commit of this repository, scans the candidate
 with Trivy, and publishes it to GHCR only if HIGH and CRITICAL OS or library
 findings are absent.
 
@@ -220,9 +221,14 @@ HIGH/CRITICAL publication gate remain active. These opt-outs do not make
 builds or scans network-free.
 
 The Go opt-out applies to subsequent builds; existing runtime containers do not
-contain the Go toolchain. Repository Dockerfile changes alone do not trigger
-the daily workflow's rebuild decision.
-After integrating the changes into the default branch, request a rebuild:
+contain the Go toolchain.
+
+Every push to `master` starts `rebuild-on-push.yml`, which runs the daily
+workflow with the same gates. The image records the commit of this repository it
+was built from (`io.github.carvvf.pgsql-docker.repository.revision`), and both
+workflows rebuild when the active image carries another commit, also when the
+upstream version and runtime base are unchanged. Documentation-only commits are
+included. To rebuild without a new commit, request one manually:
 
 ```bash
 gh workflow run scan-active-image.yml --repo carvvf/pgsql-docker -f force_rebuild=true

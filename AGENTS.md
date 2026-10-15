@@ -182,8 +182,10 @@ The expected checks are:
    the pinned `gosu` source commit.
 2. Scan the active GHCR `latest` image and retain the report.
 3. Build a custom candidate when the PostgreSQL source revision or Ubuntu
-   runtime digest has changed, the active image has findings, or a manual
-   workflow explicitly requests a rebuild.
+   runtime digest has changed, the active image was built from another commit
+   of this repository (checked daily and after every push to `master`), the
+   active image has findings, or a manual workflow explicitly requests a
+   rebuild.
 4. Build and scan the `linux/amd64` candidate with Trivy. Scope the scan with
    `scanners: vuln` and `severity: HIGH,CRITICAL`. If the image bakes in an
    SBOM or other dependency-manifest file (for example an SPDX/CycloneDX

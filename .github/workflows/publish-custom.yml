@@ -260,6 +260,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ needs.preflight.outputs.version }}
+            io.github.carvvf.pgsql-docker.repository.revision=${{ github.sha }}
             io.github.carvvf.pgsql-docker.postgres.source.ref=${{ needs.preflight.outputs.source_ref }}
             io.github.carvvf.pgsql-docker.postgres.source.revision=${{ needs.preflight.outputs.source_revision }}
             io.github.carvvf.pgsql-docker.postgres.upstream.digest=${{ needs.preflight.outputs.upstream_digest }}
