@@ -135,6 +135,11 @@ dump/restore) step.
   `master` commit directly). These are the second and third upstream sources
   the release process must track, distinct from the PostgreSQL release
   itself and from each other.
+- Build `gosu` with the newest stable patch release of the pinned Go minor
+  series (currently 1.27), resolved during CI from Go's release index together
+  with its official linux/amd64 archive SHA-256, which the build verifies.
+  Record the version in OCI labels and workflow output. Moving to another Go
+  minor series is an explicit change.
 - Use `ubuntu:24.04` as the final runtime base and resolve its manifest digest
   during CI. Keep the Dockerfile small, avoid unnecessary runtime packages,
   clean package metadata, and do not embed credentials.
@@ -178,16 +183,16 @@ than copying Qdrant- or Unoserver-specific logic.
 The expected checks are:
 
 1. Resolve the official PostgreSQL minor version and source tag/commit, the
-   official `postgres:18` image digest, the Ubuntu runtime-base digest, and
-   the pinned `gosu` source commit.
+   official `postgres:18` image digest, the Ubuntu runtime-base digest, the
+   pinned `gosu` source commit, and the Go toolchain used to build it.
 2. Scan the active GHCR `latest` image and retain the report, unless a
    build-input signal in item 3 (or a manual request) already requires a
    rebuild; the candidate and the republished `latest` are scanned anyway.
-3. Build a custom candidate when the PostgreSQL source revision or Ubuntu
-   runtime digest has changed, the active image was built from another commit
-   of this repository (checked daily and after every push to `master`), the
-   active image has findings, or a manual workflow explicitly requests a
-   rebuild.
+3. Build a custom candidate when the PostgreSQL source revision, Ubuntu
+   runtime digest, or gosu Go toolchain version has changed, the active image
+   was built from another commit of this repository (checked daily and after
+   every push to `master`), the active image has findings, or a manual workflow
+   explicitly requests a rebuild.
 4. Build and scan the `linux/amd64` candidate with Trivy. Scope the scan with
    `scanners: vuln` and `severity: HIGH,CRITICAL`. If the image bakes in an
    SBOM or other dependency-manifest file (for example an SPDX/CycloneDX

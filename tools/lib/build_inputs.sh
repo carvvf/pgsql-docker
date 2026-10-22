@@ -41,9 +41,63 @@ resolve_source_revision() {
   printf '%s\n' "${revision}"
 }
 
+# The gosu builder follows the newest stable patch release of this Go minor
+# series, so a Go standard-library fix reaches the next build without a
+# repository change. Moving to another minor series is a deliberate edit here.
+GO_TOOLCHAIN_SERIES='1.27'
+GO_RELEASES_URL='https://go.dev/dl/?mode=json&include=all'
+
+resolve_go_toolchain() {
+  local requested_version="${GO_TOOLCHAIN_VERSION:-}"
+  local requested_sha256="${GO_TOOLCHAIN_SHA256:-}"
+  local series_pattern="^${GO_TOOLCHAIN_SERIES//./\\.}\\.[0-9]+$"
+  local releases resolved
+  if [ -n "${requested_version}" ] && [[ ! "${requested_version}" =~ ${series_pattern} ]]; then
+    build_input_error "A Go ${GO_TOOLCHAIN_SERIES}.x toolchain version is required: ${requested_version}"
+    return 1
+  fi
+  if [ -n "${requested_sha256}" ] && [[ ! "${requested_sha256}" =~ ^[a-f0-9]{64}$ ]]; then
+    build_input_error "Invalid requested Go toolchain SHA-256: ${requested_sha256}"
+    return 1
+  fi
+  releases="$(curl --fail --silent --show-error --location "${GO_RELEASES_URL}")" || return
+  # Only stable releases (no betas or release candidates) and the official
+  # linux/amd64 archive, whose SHA-256 the Dockerfile verifies before use.
+  resolved="$(jq -r --arg pattern "${series_pattern}" --arg series "${GO_TOOLCHAIN_SERIES}" --arg requested "${requested_version}" '
+    [ .[]
+      | select(.stable == true)
+      | (.version | ltrimstr("go")) as $version
+      | select(($version | test($pattern)) and ($requested == "" or $version == $requested))
+      | {
+          version: $version,
+          patch: ($version | ltrimstr($series + ".") | tonumber),
+          sha256: ([.files[]? | select(.os == "linux" and .arch == "amd64" and .kind == "archive") | .sha256][0] // "")
+        } ]
+    | max_by(.patch) // empty
+    | "\(.version) \(.sha256)"
+  ' <<<"${releases}")" || {
+    build_input_error "Could not parse the Go release index from ${GO_RELEASES_URL}."
+    return 1
+  }
+  if [ -z "${resolved}" ]; then
+    build_input_error "No stable Go ${requested_version:-${GO_TOOLCHAIN_SERIES}.x} release is listed at ${GO_RELEASES_URL}."
+    return 1
+  fi
+  go_toolchain_version="${resolved%% *}"
+  go_toolchain_sha256="${resolved#* }"
+  if [[ ! "${go_toolchain_sha256}" =~ ^[a-f0-9]{64}$ ]]; then
+    build_input_error "Go ${go_toolchain_version} has no valid linux/amd64 archive SHA-256."
+    return 1
+  fi
+  if [ -n "${requested_sha256}" ] && [ "${requested_sha256}" != "${go_toolchain_sha256}" ]; then
+    build_input_error "The requested Go toolchain SHA-256 does not match Go ${go_toolchain_version}."
+    return 1
+  fi
+}
+
 resolve_build_inputs() {
   local required
-  for required in docker git awk; do
+  for required in docker git awk curl jq; do
     command -v "${required}" >/dev/null || { build_input_error "${required} is required."; return 1; }
   done
   if [ "${PG_MAJOR:-18}" != '18' ]; then
@@ -151,9 +205,10 @@ resolve_build_inputs() {
     build_input_error "Ubuntu 24.04 is required; resolved ${ubuntu_version}."
     return 1
   fi
-  printf 'Resolved PostgreSQL %s at %s; gosu %s at %s; entrypoint %s; Ubuntu %s.\n' \
+  resolve_go_toolchain || return
+  printf 'Resolved PostgreSQL %s at %s; gosu %s at %s built with Go %s; entrypoint %s; Ubuntu %s.\n' \
     "${upstream_version}" "${source_revision}" "${gosu_source_ref}" "${gosu_source_revision}" \
-    "${entrypoint_source_commit}" "${ubuntu_base_digest}" >&2
+    "${go_toolchain_version}" "${entrypoint_source_commit}" "${ubuntu_base_digest}" >&2
 }
 
 write_build_inputs() {
@@ -165,6 +220,8 @@ write_build_inputs() {
     "source_revision=${source_revision}" \
     "gosu_source_ref=${gosu_source_ref}" \
     "gosu_source_revision=${gosu_source_revision}" \
+    "go_toolchain_version=${go_toolchain_version}" \
+    "go_toolchain_sha256=${go_toolchain_sha256}" \
     "entrypoint_source_commit=${entrypoint_source_commit}" \
     "ubuntu_base_ref=${ubuntu_base_ref}" \
     "ubuntu_base_digest=${ubuntu_base_digest}"

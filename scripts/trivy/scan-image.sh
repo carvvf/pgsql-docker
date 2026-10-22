@@ -53,13 +53,16 @@ run_scan() {
   return "${scan_status}"
 }
 
+# Any patch release of the Trivy minor series used by CI is accepted.
+trivy_series="$(bash "${SCRIPT_DIR}/resolve-version.sh" --series)"
 if ! command -v trivy >/dev/null 2>&1; then
-  echo 'Trivy 0.75.0 is required. Install it or use tools/dev_trivy_scan.sh.' >&2
+  echo "Trivy ${trivy_series}.x is required. Install it or use tools/dev_trivy_scan.sh." >&2
   exit 2
 fi
 trivy_version="$(trivy --version | awk '/^Version:/ { print $2; exit }')"
-if [ "${trivy_version}" != '0.75.0' ]; then
-  echo "Trivy 0.75.0 is required; found ${trivy_version:-unknown}. Install it or use tools/dev_trivy_scan.sh." >&2
+trivy_version_pattern="^${trivy_series//./\\.}\\.[0-9]+$"
+if [[ ! "${trivy_version}" =~ ${trivy_version_pattern} ]]; then
+  echo "Trivy ${trivy_series}.x is required; found ${trivy_version:-unknown}. Install it or use tools/dev_trivy_scan.sh." >&2
   exit 2
 fi
 if [ ! -f "${DOCKERFILE_PATH}" ]; then

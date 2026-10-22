@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-TRIVY_IMAGE="${TRIVY_IMAGE:-aquasec/trivy:0.75.0}"
+# The scanner image follows the newest patch release of the Trivy minor series
+# in scripts/trivy/resolve-version.sh, as in CI; TRIVY_IMAGE overrides it.
+TRIVY_IMAGE="${TRIVY_IMAGE:-}"
 IMAGE_REF="${IMAGE_REF:-pgsql-custom:local}"
 REPORT_SEVERITIES="${REPORT_SEVERITIES:-UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL}"
 FAIL_SEVERITIES="${FAIL_SEVERITIES:-HIGH,CRITICAL}"
@@ -25,6 +27,11 @@ DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
 if ! docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
   echo "Image not found: ${IMAGE_REF}. Run the local build task first." >&2
   exit 2
+fi
+
+if [ -z "${TRIVY_IMAGE}" ]; then
+  trivy_version="$(bash "${REPO_ROOT}/scripts/trivy/resolve-version.sh")"
+  TRIVY_IMAGE="aquasec/trivy:${trivy_version}"
 fi
 
 mkdir -p "${REPORTS_DIR}" "${TRIVY_CACHE_DIR}"
@@ -82,7 +89,7 @@ scan_target() {
   return "${scan_status}"
 }
 
-echo "[Trivy] Pulling pinned scanner image: ${TRIVY_IMAGE}" >&2
+echo "[Trivy] Pulling scanner image: ${TRIVY_IMAGE}" >&2
 docker pull "${TRIVY_IMAGE}" >/dev/null
 
 if scan_target repository fs /workspace --scanners vuln; then

@@ -19,10 +19,11 @@ ARG PG_MAJOR=18
 # statically embedded in any binary it compiles, including gosu, even though
 # gosu itself barely touches those packages. Building gosu with a current,
 # checksum-verified upstream Go toolchain instead of the distro package
-# avoids shipping that stale stdlib. Re-verify this pin against
-# https://go.dev/dl/?mode=json when bumping.
-ARG GO_TOOLCHAIN_VERSION=1.27.2
-ARG GO_TOOLCHAIN_SHA256=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+# avoids shipping that stale stdlib. tools/lib/build_inputs.sh resolves the
+# newest stable patch release of the pinned Go minor series, with its official
+# linux/amd64 archive SHA-256, from https://go.dev/dl/?mode=json&include=all.
+ARG GO_TOOLCHAIN_VERSION
+ARG GO_TOOLCHAIN_SHA256
 
 # All three sources are resolved on the same base as the runtime image, not a
 # separate build distro: the compiled `postgres`/`psql` binaries dynamically
@@ -84,6 +85,10 @@ ARG GO_TOOLCHAIN_SHA256
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+RUN if [ -z "${GO_TOOLCHAIN_VERSION}" ] || [ -z "${GO_TOOLCHAIN_SHA256}" ]; then \
+      echo 'GO_TOOLCHAIN_VERSION and GO_TOOLCHAIN_SHA256 are required build arguments.' >&2; \
+      exit 1; \
+    fi
 # hadolint ignore=DL4006
 RUN curl --fail --silent --show-error --location \
       "https://go.dev/dl/go${GO_TOOLCHAIN_VERSION}.linux-amd64.tar.gz" \
@@ -175,6 +180,8 @@ ARG POSTGRES_IMAGE_VERSION
 ARG GOSU_SOURCE_REPOSITORY
 ARG GOSU_SOURCE_REF
 ARG GOSU_SOURCE_REVISION
+ARG GO_TOOLCHAIN_VERSION
+ARG GO_TOOLCHAIN_SHA256
 ARG ENTRYPOINT_SOURCE_REPOSITORY
 ARG ENTRYPOINT_SOURCE_COMMIT
 ARG UBUNTU_BASE_IMAGE
@@ -197,6 +204,8 @@ LABEL io.github.carvvf.pgsql-docker.postgres.major="${PG_MAJOR}"
 LABEL io.github.carvvf.pgsql-docker.gosu.source.repository="${GOSU_SOURCE_REPOSITORY}"
 LABEL io.github.carvvf.pgsql-docker.gosu.source.ref="${GOSU_SOURCE_REF}"
 LABEL io.github.carvvf.pgsql-docker.gosu.source.revision="${GOSU_SOURCE_REVISION}"
+LABEL io.github.carvvf.pgsql-docker.gosu.go.version="${GO_TOOLCHAIN_VERSION}"
+LABEL io.github.carvvf.pgsql-docker.gosu.go.sha256="${GO_TOOLCHAIN_SHA256}"
 LABEL io.github.carvvf.pgsql-docker.entrypoint.source.repository="${ENTRYPOINT_SOURCE_REPOSITORY}"
 LABEL io.github.carvvf.pgsql-docker.entrypoint.source.commit="${ENTRYPOINT_SOURCE_COMMIT}"
 LABEL io.github.carvvf.pgsql-docker.runtime.base.image="${UBUNTU_BASE_IMAGE}"

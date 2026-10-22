@@ -13,6 +13,32 @@ UBUNTU_DIGEST = "sha256:" + "b" * 64
 SOURCE_COMMIT = "c" * 40
 GOSU_COMMIT = "d" * 40
 ENTRYPOINT_COMMIT = "e" * 40
+GO_SHA256 = "1" * 64
+GO_PREVIOUS_SHA256 = "2" * 64
+
+
+def go_release(version, sha256, stable=True):
+    return {
+        "version": "go" + version,
+        "stable": stable,
+        "files": [
+            {"os": "", "arch": "", "kind": "source", "sha256": "9" * 64},
+            {"os": "linux", "arch": "arm64", "kind": "archive", "sha256": "8" * 64},
+            {"os": "linux", "arch": "amd64", "kind": "installer", "sha256": "7" * 64},
+            {"os": "linux", "arch": "amd64", "kind": "archive", "sha256": sha256},
+        ],
+    }
+
+
+# Unordered on purpose: 1.27.10 must win over 1.27.9 numerically, while newer
+# minors and unstable releases are never selected.
+GO_RELEASES = [
+    go_release("1.28.0", "3" * 64),
+    go_release("1.27.9", GO_PREVIOUS_SHA256),
+    go_release("1.27.11", "4" * 64, stable=False),
+    go_release("1.27.10", GO_SHA256),
+    go_release("1.27rc1", "5" * 64, stable=False),
+]
 INPUT_NAMES = (
     "POSTGRES_UPSTREAM_REF",
     "POSTGRES_UPSTREAM_VERSION",
@@ -21,6 +47,8 @@ INPUT_NAMES = (
     "POSTGRES_SOURCE_REVISION",
     "GOSU_SOURCE_REF",
     "GOSU_SOURCE_REVISION",
+    "GO_TOOLCHAIN_VERSION",
+    "GO_TOOLCHAIN_SHA256",
     "ENTRYPOINT_SOURCE_COMMIT",
     "UBUNTU_BASE_IMAGE",
     "UBUNTU_BASE_DIGEST",
@@ -39,7 +67,11 @@ tool = Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ["BUILD_INPUT_TEST_CALLS"], "a", encoding="utf-8") as log:
     log.write(json.dumps([tool, *args]) + "\n")
-if tool == "git":
+if tool == "curl":
+    if state.get("curl_status"):
+        sys.exit(state["curl_status"])
+    print(json.dumps(state["go_releases"]))
+elif tool == "git":
     repository = next(arg for arg in args if arg.startswith("https://"))
     if repository == "https://github.com/docker-library/postgres.git":
         print(state["entrypoint_commit"] + "\trefs/heads/master")
@@ -80,7 +112,7 @@ class BuildInputTests(unittest.TestCase):
         self.root = Path(self.workspace.name)
         self.bin_dir = self.root / "bin"
         self.bin_dir.mkdir(mode=0o775)
-        for name in ("docker", "git"):
+        for name in ("docker", "git", "curl"):
             tool = self.bin_dir / name
             tool.write_text(TOOL_STUB, encoding="utf-8")
             tool.chmod(0o775)
@@ -96,6 +128,7 @@ class BuildInputTests(unittest.TestCase):
             "gosu_commit": GOSU_COMMIT,
             "entrypoint_commit": ENTRYPOINT_COMMIT,
             "annotated": True,
+            "go_releases": GO_RELEASES,
         }
 
     def invoke(self, entrypoint="resolve_build_inputs.sh", **inputs):
@@ -134,6 +167,8 @@ class BuildInputTests(unittest.TestCase):
                 "source_revision": SOURCE_COMMIT,
                 "gosu_source_ref": "1.19",
                 "gosu_source_revision": GOSU_COMMIT,
+                "go_toolchain_version": "1.27.10",
+                "go_toolchain_sha256": GO_SHA256,
                 "entrypoint_source_commit": ENTRYPOINT_COMMIT,
                 "ubuntu_base_ref": "ubuntu@" + UBUNTU_DIGEST,
                 "ubuntu_base_digest": UBUNTU_DIGEST,
@@ -158,12 +193,16 @@ class BuildInputTests(unittest.TestCase):
             POSTGRES_SOURCE_REVISION=SOURCE_COMMIT,
             GOSU_SOURCE_REF="1.19",
             GOSU_SOURCE_REVISION=GOSU_COMMIT,
+            GO_TOOLCHAIN_VERSION="1.27.9",
+            GO_TOOLCHAIN_SHA256=GO_PREVIOUS_SHA256,
             ENTRYPOINT_SOURCE_COMMIT=ENTRYPOINT_COMMIT,
             UBUNTU_BASE_IMAGE="ubuntu@" + UBUNTU_DIGEST,
             UBUNTU_BASE_DIGEST=UBUNTU_DIGEST,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("entrypoint_source_commit=" + ENTRYPOINT_COMMIT, result.stdout)
+        self.assertIn("go_toolchain_version=1.27.9", result.stdout)
+        self.assertIn("go_toolchain_sha256=" + GO_PREVIOUS_SHA256, result.stdout)
         self.assertFalse(any("refs/heads/master" in call for call in self.calls()))
         self.assertFalse(any("postgres:18" in call for call in self.calls()))
 
@@ -180,6 +219,8 @@ class BuildInputTests(unittest.TestCase):
             "POSTGRES_IMAGE_VERSION=18.6-local",
             "GOSU_SOURCE_REF=1.19",
             "GOSU_SOURCE_REVISION=" + GOSU_COMMIT,
+            "GO_TOOLCHAIN_VERSION=1.27.10",
+            "GO_TOOLCHAIN_SHA256=" + GO_SHA256,
             "ENTRYPOINT_SOURCE_COMMIT=" + ENTRYPOINT_COMMIT,
             "UBUNTU_BASE_IMAGE=ubuntu@" + UBUNTU_DIGEST,
             "UBUNTU_BASE_DIGEST=" + UBUNTU_DIGEST,
@@ -221,6 +262,12 @@ class BuildInputTests(unittest.TestCase):
             {"UBUNTU_BASE_DIGEST": POSTGRES_DIGEST},
             {"POSTGRES_UPSTREAM_VERSION": "18.6", "POSTGRES_SOURCE_REF": "REL_18_5"},
             {"ENTRYPOINT_SOURCE_COMMIT": "invalid"},
+            {"GO_TOOLCHAIN_VERSION": "1.28.0"},
+            {"GO_TOOLCHAIN_VERSION": "1.27"},
+            {"GO_TOOLCHAIN_VERSION": "1.27.11"},
+            {"GO_TOOLCHAIN_VERSION": "1.27.12"},
+            {"GO_TOOLCHAIN_SHA256": "invalid"},
+            {"GO_TOOLCHAIN_SHA256": GO_PREVIOUS_SHA256},
         ):
             with self.subTest(inputs=inputs):
                 inputs = {"POSTGRES_UPSTREAM_REF": "postgres:18", "UBUNTU_BASE_IMAGE": "ubuntu:24.04", **inputs}
@@ -242,6 +289,19 @@ class BuildInputTests(unittest.TestCase):
                 self.state["missing_tag"] = source
                 result = self.invoke("build_local_image.sh")
                 self.assertNotEqual(result.returncode, 0)
+        self.assert_no_build()
+
+    def test_missing_go_series_aborts_before_build(self):
+        self.state["go_releases"] = [go_release("1.28.0", "3" * 64), go_release("1.27.11", "4" * 64, stable=False)]
+        result = self.invoke("build_local_image.sh")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("No stable Go 1.27.x release", result.stderr)
+        self.assert_no_build()
+
+    def test_go_release_index_failure_aborts_before_build(self):
+        self.state["curl_status"] = 22
+        result = self.invoke("build_local_image.sh")
+        self.assertEqual(result.returncode, 22)
         self.assert_no_build()
 
     def test_pull_failure_aborts_before_build(self):

@@ -74,6 +74,14 @@ on:
         required: false
         type: string
         default: ''
+      go_toolchain_version:
+        required: false
+        type: string
+        default: ''
+      go_toolchain_sha256:
+        required: false
+        type: string
+        default: ''
       entrypoint_source_commit:
         required: false
         type: string
@@ -112,6 +120,8 @@ jobs:
       source_revision: ${{ steps.resolve.outputs.source_revision }}
       gosu_source_ref: ${{ steps.resolve.outputs.gosu_source_ref }}
       gosu_source_revision: ${{ steps.resolve.outputs.gosu_source_revision }}
+      go_toolchain_version: ${{ steps.resolve.outputs.go_toolchain_version }}
+      go_toolchain_sha256: ${{ steps.resolve.outputs.go_toolchain_sha256 }}
       entrypoint_source_commit: ${{ steps.resolve.outputs.entrypoint_source_commit }}
       ubuntu_base_ref: ${{ steps.resolve.outputs.ubuntu_base_ref }}
       ubuntu_base_digest: ${{ steps.resolve.outputs.ubuntu_base_digest }}
@@ -140,6 +150,8 @@ jobs:
           POSTGRES_SOURCE_REVISION: ${{ inputs.postgres_source_revision }}
           GOSU_SOURCE_REF: ${{ inputs.gosu_source_ref }}
           GOSU_SOURCE_REVISION: ${{ inputs.gosu_source_revision }}
+          GO_TOOLCHAIN_VERSION: ${{ inputs.go_toolchain_version }}
+          GO_TOOLCHAIN_SHA256: ${{ inputs.go_toolchain_sha256 }}
           ENTRYPOINT_SOURCE_COMMIT: ${{ inputs.entrypoint_source_commit }}
           UBUNTU_BASE_IMAGE: ${{ inputs.ubuntu_base_ref }}
           UBUNTU_BASE_DIGEST: ${{ inputs.ubuntu_base_digest }}
@@ -205,6 +217,8 @@ jobs:
             echo "source_revision=${source_revision}"
             echo "gosu_source_ref=${gosu_source_ref}"
             echo "gosu_source_revision=${gosu_source_revision}"
+            echo "go_toolchain_version=${go_toolchain_version}"
+            echo "go_toolchain_sha256=${go_toolchain_sha256}"
             echo "entrypoint_source_commit=${entrypoint_source_commit}"
             echo "ubuntu_base_ref=${ubuntu_base_ref}"
             echo "ubuntu_base_digest=${ubuntu_base_digest}"
@@ -215,6 +229,7 @@ jobs:
             echo "- Official PostgreSQL release signal: ${upstream_ref}"
             echo "- PostgreSQL source: ${source_ref}@${source_revision}"
             echo "- gosu source: ${gosu_source_ref}@${gosu_source_revision}"
+            echo "- gosu Go toolchain: ${go_toolchain_version} (linux/amd64 SHA-256 ${go_toolchain_sha256})"
             echo "- Entrypoint source: docker-library/postgres@${entrypoint_source_commit}"
             echo "- Ubuntu runtime base: ${ubuntu_base_ref}"
             echo "- Previous custom version: ${previous_version}"
@@ -266,6 +281,8 @@ jobs:
             io.github.carvvf.pgsql-docker.postgres.upstream.digest=${{ needs.preflight.outputs.upstream_digest }}
             io.github.carvvf.pgsql-docker.gosu.source.ref=${{ needs.preflight.outputs.gosu_source_ref }}
             io.github.carvvf.pgsql-docker.gosu.source.revision=${{ needs.preflight.outputs.gosu_source_revision }}
+            io.github.carvvf.pgsql-docker.gosu.go.version=${{ needs.preflight.outputs.go_toolchain_version }}
+            io.github.carvvf.pgsql-docker.gosu.go.sha256=${{ needs.preflight.outputs.go_toolchain_sha256 }}
             io.github.carvvf.pgsql-docker.entrypoint.source.commit=${{ needs.preflight.outputs.entrypoint_source_commit }}
             io.github.carvvf.pgsql-docker.runtime.base.name=ubuntu:24.04
             io.github.carvvf.pgsql-docker.runtime.base.digest=${{ needs.preflight.outputs.ubuntu_base_digest }}
@@ -277,6 +294,8 @@ jobs:
             POSTGRES_UPSTREAM_DIGEST=${{ needs.preflight.outputs.upstream_digest }}
             GOSU_SOURCE_REF=${{ needs.preflight.outputs.gosu_source_ref }}
             GOSU_SOURCE_REVISION=${{ needs.preflight.outputs.gosu_source_revision }}
+            GO_TOOLCHAIN_VERSION=${{ needs.preflight.outputs.go_toolchain_version }}
+            GO_TOOLCHAIN_SHA256=${{ needs.preflight.outputs.go_toolchain_sha256 }}
             ENTRYPOINT_SOURCE_COMMIT=${{ needs.preflight.outputs.entrypoint_source_commit }}
             UBUNTU_BASE_IMAGE=${{ needs.preflight.outputs.ubuntu_base_ref }}
             UBUNTU_BASE_DIGEST=${{ needs.preflight.outputs.ubuntu_base_digest }}
@@ -303,21 +322,32 @@ jobs:
                 "docker-archive:${IMAGE_ARCHIVE}:${LOCAL_IMAGE_REF}"
             '
 
+      - name: Resolve Trivy patch release
+        id: trivy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(bash scripts/trivy/resolve-version.sh)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "- Trivy: ${version}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Scan candidate archive with Trivy
         env:
           TRIVY_CACHE_DIR: /tmp/trivy-cache
+          TRIVY_IMAGE: aquasec/trivy:${{ steps.trivy.outputs.version }}
         run: |
           set -euo pipefail
 
           mkdir -p "${TRIVY_CACHE_DIR}"
-          docker pull aquasec/trivy:0.75.0
+          docker pull "${TRIVY_IMAGE}"
 
           docker run --rm \
             -e TRIVY_DISABLE_TELEMETRY=true \
             -e TRIVY_SKIP_VERSION_CHECK=true \
             -v "${IMAGE_ARCHIVE}:${IMAGE_ARCHIVE}:ro" \
             -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
-            aquasec/trivy:0.75.0 \
+            "${TRIVY_IMAGE}" \
             image \
             --input "${IMAGE_ARCHIVE}" \
             --format json \
@@ -408,6 +438,7 @@ jobs:
             echo "- Mutable tag: ${LATEST_IMAGE}"
             echo '- PostgreSQL source: ${{ needs.preflight.outputs.source_ref }}@${{ needs.preflight.outputs.source_revision }}'
             echo '- gosu source: ${{ needs.preflight.outputs.gosu_source_ref }}@${{ needs.preflight.outputs.gosu_source_revision }}'
+            echo '- gosu Go toolchain: ${{ needs.preflight.outputs.go_toolchain_version }}'
             echo '- Entrypoint source: docker-library/postgres@${{ needs.preflight.outputs.entrypoint_source_commit }}'
             echo '- Ubuntu base: ${{ needs.preflight.outputs.ubuntu_base_ref }}'
             echo '- Source: one BuildKit invocation, promoted from the validated OCI archive with Skopeo without rebuilding'

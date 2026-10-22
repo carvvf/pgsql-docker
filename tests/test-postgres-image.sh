@@ -9,9 +9,16 @@ set -euo pipefail
 IMAGE_REF="${IMAGE_REF:-pgsql-custom:local}"
 # Defaults to the vendored fixture (tests/fixtures/postgres-init), so this
 # runs standalone in CI with no cross-repository checkout or secret. Set
-# RAGTIME_REPO to a checked-out ragtime-rag-orch path to instead run against
-# the live contract and catch fixture drift locally.
+# RAGTIME_REPO to a checked-out ragtime-rag-orch path, or to gh:<owner>/<repo>
+# to download the scripts from that repository's master branch with the GitHub
+# CLI, to instead run against the live contract and catch fixture drift
+# locally. When a gh: download fails in an interactive terminal, the test asks
+# for a local path instead, or for an empty answer to use the fixture.
 RAGTIME_REPO="${RAGTIME_REPO:-}"
+RAGTIME_GITHUB_BRANCH='master'
+RAGTIME_INIT_PATH='docker/services/postgres-init'
+RAGTIME_DOWNLOAD_DIR=''
+INIT_DIR=''
 RUN_ID="${GITHUB_RUN_ID:-local}-$$"
 CONTAINER_NAME="${CONTAINER_NAME:-postgres-image-test-${RUN_ID}}"
 DATA_VOLUME="${DATA_VOLUME:-postgres-image-test-data-${RUN_ID}}"
@@ -23,15 +30,73 @@ RAGTIME_POSTGRES_APP_USER="${RAGTIME_POSTGRES_APP_USER:-ragtime_app}"
 RAGTIME_POSTGRES_APP_PASSWORD="${RAGTIME_POSTGRES_APP_PASSWORD:-ci-app-password}"
 POSTGRES_INITDB_ARGS="--locale-provider=builtin --builtin-locale=C.UTF-8 --lc-collate=C.UTF-8 --lc-ctype=C.UTF-8 --encoding=UTF8"
 
+# Downloads the top-level init scripts of a GitHub ragtime-rag-orch master
+# commit, keeping each file's executable bit: docker-entrypoint.sh executes
+# executable *.sh files and sources the others. Every failure returns non-zero
+# so the caller can offer the local alternatives.
+download_github_init_dir() {
+  local repository="$1" destination="$2" commit directory_sha entries mode sha name
+  if [[ ! "${repository}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    echo "Invalid GitHub source: gh:${repository}. Use gh:<owner>/<repo>." >&2
+    return 1
+  fi
+  if ! command -v gh >/dev/null; then
+    echo 'The GitHub CLI (gh) is not installed.' >&2
+    return 1
+  fi
+  commit="$(gh api "repos/${repository}/commits/${RAGTIME_GITHUB_BRANCH}" --jq '.sha')" || return 1
+  directory_sha="$(gh api "repos/${repository}/contents/${RAGTIME_INIT_PATH%/*}?ref=${commit}" \
+    --jq ".[] | select(.type == \"dir\" and .name == \"${RAGTIME_INIT_PATH##*/}\") | .sha")" || return 1
+  if [ -z "${directory_sha}" ]; then
+    echo "${RAGTIME_INIT_PATH} not found in ${repository}@${commit}." >&2
+    return 1
+  fi
+  entries="$(gh api "repos/${repository}/git/trees/${directory_sha}" \
+    --jq '.tree[] | select(.type == "blob") | "\(.mode) \(.sha) \(.path)"')" || return 1
+  while read -r mode sha name; do
+    [ -n "${name}" ] || continue
+    if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || [[ ! "${mode}" =~ ^100(644|755)$ ]]; then
+      echo "Skipping unsupported init entry: ${name} (mode ${mode})" >&2
+      continue
+    fi
+    gh api -H 'Accept: application/vnd.github.raw+json' "repos/${repository}/git/blobs/${sha}" \
+      >"${destination}/${name}" || return 1
+    if [ "${mode}" = '100755' ]; then
+      chmod 0755 "${destination}/${name}"
+    else
+      chmod 0644 "${destination}/${name}"
+    fi
+  done <<<"${entries}"
+  echo "Using Ragtime bootstrap scripts from ${repository}@${commit} (${RAGTIME_GITHUB_BRANCH})." >&2
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -n "${RAGTIME_REPO}" ]; then
-  INIT_DIR="${RAGTIME_REPO}/docker/services/postgres-init"
-else
-  INIT_DIR="${SCRIPT_DIR}/fixtures/postgres-init"
+if [[ "${RAGTIME_REPO}" == gh:* ]]; then
+  RAGTIME_DOWNLOAD_DIR="$(mktemp -d)"
+  trap 'rm -rf "${RAGTIME_DOWNLOAD_DIR}"' EXIT
+  # The container's postgres user must read the bind-mounted scripts.
+  chmod 0755 "${RAGTIME_DOWNLOAD_DIR}"
+  if download_github_init_dir "${RAGTIME_REPO#gh:}" "${RAGTIME_DOWNLOAD_DIR}"; then
+    INIT_DIR="${RAGTIME_DOWNLOAD_DIR}"
+  elif [ -t 0 ]; then
+    find "${RAGTIME_DOWNLOAD_DIR}" -mindepth 1 -delete
+    echo "Could not download the Ragtime bootstrap scripts from ${RAGTIME_REPO} (${RAGTIME_GITHUB_BRANCH})." >&2
+    read -r -p 'Local ragtime-rag-orch path (empty uses the vendored fixture): ' RAGTIME_REPO
+    RAGTIME_REPO="${RAGTIME_REPO/#\~/${HOME}}"
+  else
+    echo "Could not download the Ragtime bootstrap scripts from ${RAGTIME_REPO}; set RAGTIME_REPO to a local path or leave it empty for the vendored fixture." >&2
+    exit 2
+  fi
 fi
-if [ ! -d "${INIT_DIR}" ]; then
-  echo "Bootstrap init directory not found: ${INIT_DIR}" >&2
-  echo "Set RAGTIME_REPO to a checked-out ragtime-rag-orch path, or check tests/fixtures/postgres-init." >&2
+if [ -z "${INIT_DIR}" ] && [ -n "${RAGTIME_REPO}" ]; then
+  INIT_DIR="${RAGTIME_REPO}/${RAGTIME_INIT_PATH}"
+elif [ -z "${INIT_DIR}" ]; then
+  INIT_DIR="${SCRIPT_DIR}/fixtures/postgres-init"
+  echo "Using the vendored Ragtime bootstrap fixture: ${INIT_DIR}" >&2
+fi
+if [ ! -d "${INIT_DIR}" ] || [ -z "$(ls -A "${INIT_DIR}")" ]; then
+  echo "Bootstrap init directory not found or empty: ${INIT_DIR}" >&2
+  echo "Set RAGTIME_REPO to a checked-out ragtime-rag-orch path or gh:<owner>/<repo>, or check tests/fixtures/postgres-init." >&2
   exit 2
 fi
 
@@ -54,6 +119,9 @@ cleanup() {
   fi
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   docker volume rm "${DATA_VOLUME}" >/dev/null 2>&1 || true
+  if [ -n "${RAGTIME_DOWNLOAD_DIR}" ]; then
+    rm -rf "${RAGTIME_DOWNLOAD_DIR}"
+  fi
   exit "${exit_status}"
 }
 trap cleanup EXIT

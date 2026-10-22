@@ -27,6 +27,19 @@ permissions:
   contents: read
   packages: read
 
+# Serializes the whole decision-to-publication sequence of daily, manual and
+# push-triggered runs: a run that starts while another is in progress waits and
+# then sees what it published, so both cannot decide to rebuild the same commit.
+# GitHub keeps one pending run per group and a newer one replaces it. Each run
+# evaluates every rebuild signal at the commit that triggered it, which for
+# master runs is the master head at trigger time, so the replacing run covers
+# at least the commit of the run it replaced. The group must differ from
+# publish-custom.yml's, which this workflow calls, and the rebuild-on-push.yml
+# caller must not declare it, or GitHub reports a deadlock.
+concurrency:
+  group: pgsql-image-scan-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
   initial_scan:
     runs-on: ubuntu-latest
@@ -39,12 +52,15 @@ jobs:
       source_revision: ${{ steps.resolve.outputs.source_revision }}
       gosu_source_ref: ${{ steps.resolve.outputs.gosu_source_ref }}
       gosu_source_revision: ${{ steps.resolve.outputs.gosu_source_revision }}
+      go_toolchain_version: ${{ steps.resolve.outputs.go_toolchain_version }}
+      go_toolchain_sha256: ${{ steps.resolve.outputs.go_toolchain_sha256 }}
       entrypoint_source_commit: ${{ steps.resolve.outputs.entrypoint_source_commit }}
       ubuntu_base_ref: ${{ steps.resolve.outputs.ubuntu_base_ref }}
       ubuntu_base_digest: ${{ steps.resolve.outputs.ubuntu_base_digest }}
       active_exists: ${{ steps.resolve.outputs.active_exists }}
       source_changed: ${{ steps.resolve.outputs.source_changed }}
       gosu_changed: ${{ steps.resolve.outputs.gosu_changed }}
+      go_toolchain_changed: ${{ steps.resolve.outputs.go_toolchain_changed }}
       entrypoint_changed: ${{ steps.resolve.outputs.entrypoint_changed }}
       ubuntu_base_changed: ${{ steps.resolve.outputs.ubuntu_base_changed }}
       repository_changed: ${{ steps.resolve.outputs.repository_changed }}
@@ -88,6 +104,7 @@ jobs:
           active_exists=false
           source_changed=true
           gosu_changed=true
+          go_toolchain_changed=true
           entrypoint_changed=true
           ubuntu_base_changed=true
           repository_changed=true
@@ -96,6 +113,7 @@ jobs:
             active_exists=true
             active_source_revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.postgres.source.revision"}}')"
             active_gosu_revision="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.gosu.source.revision"}}')"
+            active_go_toolchain_version="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.gosu.go.version"}}')"
             active_entrypoint_commit="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.entrypoint.source.commit"}}')"
             active_ubuntu_base_digest="$(docker image inspect "${image_ref}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.runtime.base.digest"}}')"
             if [ "${active_source_revision}" = "${source_revision}" ]; then
@@ -103,6 +121,12 @@ jobs:
             fi
             if [ "${active_gosu_revision}" = "${gosu_source_revision}" ]; then
               gosu_changed=false
+            fi
+            # A new Go patch release usually carries standard-library security
+            # fixes compiled into gosu, so it is rebuilt without waiting for a
+            # scanner finding.
+            if [ "${active_go_toolchain_version}" = "${go_toolchain_version}" ]; then
+              go_toolchain_changed=false
             fi
             if [ "${active_entrypoint_commit}" = "${entrypoint_source_commit}" ]; then
               entrypoint_changed=false
@@ -132,12 +156,15 @@ jobs:
             echo "source_revision=${source_revision}"
             echo "gosu_source_ref=${gosu_source_ref}"
             echo "gosu_source_revision=${gosu_source_revision}"
+            echo "go_toolchain_version=${go_toolchain_version}"
+            echo "go_toolchain_sha256=${go_toolchain_sha256}"
             echo "entrypoint_source_commit=${entrypoint_source_commit}"
             echo "ubuntu_base_ref=${ubuntu_base_ref}"
             echo "ubuntu_base_digest=${ubuntu_base_digest}"
             echo "active_exists=${active_exists}"
             echo "source_changed=${source_changed}"
             echo "gosu_changed=${gosu_changed}"
+            echo "go_toolchain_changed=${go_toolchain_changed}"
             echo "entrypoint_changed=${entrypoint_changed}"
             echo "ubuntu_base_changed=${ubuntu_base_changed}"
             echo "repository_changed=${repository_changed}"
@@ -150,6 +177,7 @@ jobs:
             echo "- Official PostgreSQL release signal: ${upstream_ref}"
             echo "- PostgreSQL source: ${source_ref}@${source_revision} (changed: ${source_changed})"
             echo "- gosu source: ${gosu_source_ref}@${gosu_source_revision} (changed: ${gosu_changed})"
+            echo "- gosu Go toolchain: ${go_toolchain_version} (changed: ${go_toolchain_changed})"
             echo "- Entrypoint source: docker-library/postgres@${entrypoint_source_commit} (changed: ${entrypoint_changed})"
             echo "- Ubuntu runtime base: ${ubuntu_base_ref} (changed: ${ubuntu_base_changed})"
             echo "- Packaging repository: ${GITHUB_SHA} (changed: ${repository_changed})"
@@ -161,6 +189,7 @@ jobs:
           ACTIVE_EXISTS: ${{ steps.resolve.outputs.active_exists }}
           SOURCE_CHANGED: ${{ steps.resolve.outputs.source_changed }}
           GOSU_CHANGED: ${{ steps.resolve.outputs.gosu_changed }}
+          GO_TOOLCHAIN_CHANGED: ${{ steps.resolve.outputs.go_toolchain_changed }}
           ENTRYPOINT_CHANGED: ${{ steps.resolve.outputs.entrypoint_changed }}
           UBUNTU_BASE_CHANGED: ${{ steps.resolve.outputs.ubuntu_base_changed }}
           REPOSITORY_CHANGED: ${{ steps.resolve.outputs.repository_changed }}
@@ -181,6 +210,9 @@ jobs:
           fi
           if [ "${GOSU_CHANGED}" = 'true' ]; then
             reasons+=('gosu source revision changed')
+          fi
+          if [ "${GO_TOOLCHAIN_CHANGED}" = 'true' ]; then
+            reasons+=('gosu Go toolchain version changed')
           fi
           if [ "${ENTRYPOINT_CHANGED}" = 'true' ]; then
             reasons+=('entrypoint source commit changed')
@@ -207,12 +239,23 @@ jobs:
             echo "reasons=${reason_text}"
           } >> "${GITHUB_OUTPUT}"
 
+      - name: Resolve Trivy patch release
+        id: trivy
+        if: steps.input_decision.outputs.required == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(bash scripts/trivy/resolve-version.sh)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "- Trivy: ${version}" >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Scan active image with Trivy
         if: steps.input_decision.outputs.required == 'false'
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ steps.resolve.outputs.image_ref }}
-          version: v0.75.0
+          version: v${{ steps.trivy.outputs.version }}
           cache: false
           format: json
           output: trivy-report-initial.json
@@ -284,6 +327,8 @@ jobs:
       postgres_source_revision: ${{ needs.initial_scan.outputs.source_revision }}
       gosu_source_ref: ${{ needs.initial_scan.outputs.gosu_source_ref }}
       gosu_source_revision: ${{ needs.initial_scan.outputs.gosu_source_revision }}
+      go_toolchain_version: ${{ needs.initial_scan.outputs.go_toolchain_version }}
+      go_toolchain_sha256: ${{ needs.initial_scan.outputs.go_toolchain_sha256 }}
       entrypoint_source_commit: ${{ needs.initial_scan.outputs.entrypoint_source_commit }}
       ubuntu_base_ref: ${{ needs.initial_scan.outputs.ubuntu_base_ref }}
       ubuntu_base_digest: ${{ needs.initial_scan.outputs.ubuntu_base_digest }}
@@ -304,6 +349,9 @@ jobs:
       packages: read
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
       - name: Log in to GHCR
         uses: docker/login-action@v4.0.0
         with:
@@ -311,13 +359,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Resolve Trivy patch release
+        id: trivy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(bash scripts/trivy/resolve-version.sh)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "- Trivy: ${version}" >> "${GITHUB_STEP_SUMMARY}"
+
       # Deliberately scan mutable latest after publication. Its changed result
       # triggers the downstream update notification job below.
       - name: Scan rebuilt active image with Trivy
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ needs.initial_scan.outputs.image_ref }}
-          version: v0.75.0
+          version: v${{ steps.trivy.outputs.version }}
           cache: false
           format: json
           output: trivy-report-final.json

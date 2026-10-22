@@ -104,11 +104,13 @@ The VS Code `Docker: build local image` task invokes this entrypoint. It pulls
 the official `linux/amd64` image as a release signal, reads `PG_VERSION`,
 `PG_MAJOR`, and `GOSU_VERSION`, resolves the matching PostgreSQL and gosu source
 tags and commits, pins the `docker-library/postgres` master commit for the
-entrypoint scripts, and resolves the Ubuntu 24.04 runtime manifest digest.
+entrypoint scripts, resolves the Ubuntu 24.04 runtime manifest digest, and
+selects the Go toolchain used to compile gosu (see below).
 The official PostgreSQL image is not used as the runtime base. All resolved
 values are passed explicitly to the Dockerfile; every source checkout must
-match its expected commit. The entrypoint requires Bash, Docker, Git, and
-network access to Docker Hub and GitHub; no Python environment is needed.
+match its expected commit. The entrypoint requires Bash, Docker, Git, curl, jq,
+and network access to Docker Hub, GitHub, and go.dev; no Python environment is
+needed.
 
 To select a specific release within the supported major version:
 
@@ -122,8 +124,9 @@ the standalone build workflow, daily scan, and publication preflight.
 compiling or publishing an image. Optional environment inputs are
 `POSTGRES_UPSTREAM_REF`, `POSTGRES_UPSTREAM_VERSION`, `POSTGRES_UPSTREAM_DIGEST`,
 `POSTGRES_SOURCE_REF`, `POSTGRES_SOURCE_REVISION`, `GOSU_SOURCE_REF`,
-`GOSU_SOURCE_REVISION`, `ENTRYPOINT_SOURCE_COMMIT`, `UBUNTU_BASE_IMAGE`, and
-`UBUNTU_BASE_DIGEST`. Version, tag, commit, or digest mismatches abort resolution.
+`GOSU_SOURCE_REVISION`, `GO_TOOLCHAIN_VERSION`, `GO_TOOLCHAIN_SHA256`,
+`ENTRYPOINT_SOURCE_COMMIT`, `UBUNTU_BASE_IMAGE`, and `UBUNTU_BASE_DIGEST`.
+Version, tag, commit, checksum, or digest mismatches abort resolution.
 Gosu defaults to the version recorded in the official PostgreSQL image; an
 explicit release override must resolve to its verified upstream commit.
 Explicit digest references retain their release signal, and an explicit
@@ -144,13 +147,25 @@ or entrypoint-commit fallbacks. Input parity and provenance do not guarantee
 binary reproducibility across different build times. Publication still requires
 the existing vulnerability and runtime gates.
 
-The `gosu` build uses Go 1.27.2 with the official Linux amd64 archive SHA-256
-verified before extraction. After verifying the upstream `gosu` source, it
-updates `github.com/moby/sys/user` to `v0.4.1` and `golang.org/x/sys` to
-`v0.44.0` to remediate their reported vulnerabilities. These are explicit
+The `gosu` build uses the newest stable patch release of Go 1.27. The resolver
+reads Go's release index (`https://go.dev/dl/?mode=json&include=all`), ignores
+betas, release candidates, and other minor series, and passes the selected
+version with its official Linux amd64 archive SHA-256 to the Dockerfile, which
+verifies the archive before extraction. A new Go patch release, which usually
+carries standard-library security fixes compiled into `gosu`, therefore reaches
+the next build without a repository change; the daily scan also rebuilds when
+the active image's `io.github.carvvf.pgsql-docker.gosu.go.version` label differs
+from the resolved version. An explicit `GO_TOOLCHAIN_VERSION` must belong to the
+1.27 series, and an explicit `GO_TOOLCHAIN_SHA256` must match go.dev's checksum
+for it. Moving to another Go minor series is a deliberate edit to
+`GO_TOOLCHAIN_SERIES` in `tools/lib/build_inputs.sh`.
+
+After verifying the upstream `gosu` source, the build updates
+`github.com/moby/sys/user` to `v0.4.1` and `golang.org/x/sys` to `v0.44.0` to
+remediate their reported vulnerabilities. These are explicit
 dependency updates to the upstream release, not an unmodified upstream build.
-The archive and module pins replace the Go 1.27.1 and module v0.1.0 inputs
-reported by Trivy; these Go dependency updates do not select PostgreSQL's source version.
+The module pins replace the module v0.1.0 inputs reported by Trivy; these Go
+dependency updates do not select PostgreSQL's source version.
 
 `build/gosu-dependencies.sum` records the module archive and `go.mod` checksums
 obtained from Go's public checksum database. They are merged into the upstream
@@ -160,10 +175,10 @@ prevents the compilation step from modifying dependency requirements.
 `GOTOOLCHAIN=local` keeps compilation on the checksum-verified toolchain.
 Local and GitHub Actions builds use this same Dockerfile and dependency policy.
 Rebuild the image before scanning it; refreshing Ubuntu packages or rebuilding
-unchanged dependency pins cannot update the Go code embedded in `gosu`.
+unchanged module pins cannot update the module code embedded in `gosu`.
 
-Run resolver regression tests with Python 3's standard library. Docker and Git
-are simulated; these tests require no daemon, network, or package installs:
+Run resolver regression tests with Python 3's standard library and jq. Docker,
+Git, and curl are simulated; these tests require no daemon or network:
 
 ```bash
 python3 -m unittest discover -s tests -p test_build_inputs.py
@@ -190,16 +205,37 @@ a checked-out `ragtime-rag-orch`:
 IMAGE_REF=pgsql-custom:local RAGTIME_REPO=../ragtime-rag-orch bash tests/test-postgres-image.sh
 ```
 
+Without a local checkout, `RAGTIME_REPO=gh:<owner>/<repo>` downloads the
+top-level `docker/services/postgres-init` files from the repository's `master`
+branch with an authenticated GitHub CLI (`gh auth login`). The test prints the
+resolved commit, and each file keeps its executable bit, because the entrypoint
+executes executable `*.sh` scripts and sources the others. If the download
+fails in an interactive terminal, the test asks for a local checkout path, or
+an empty answer to use the vendored fixture; without a terminal it fails:
+
+```bash
+IMAGE_REF=pgsql-custom:local RAGTIME_REPO=gh:carvvf/ragtime-rag-orch bash tests/test-postgres-image.sh
+```
+
+Local and CI scans use the newest published patch release of Trivy 0.76.
+`scripts/trivy/resolve-version.sh` resolves it from GitHub's release list,
+ignoring drafts, pre-releases, and other minor series, so scanner fixes arrive
+without a repository change; moving to another minor series is a deliberate
+edit to `TRIVY_SERIES` in that script. Each workflow scan records the resolved
+version in its job summary. `TRIVY_VERSION` selects an explicit 0.76 release.
+The resolver requires curl and jq; it uses `GH_TOKEN`, `GITHUB_TOKEN`, or an
+authenticated GitHub CLI when available to avoid anonymous API rate limits.
+
 For a local Trivy filesystem, Dockerfile, and image scan, use the same
-Trivy 0.75.0 container as CI; no host Trivy installation is required:
+Trivy container as CI; no host Trivy installation is required:
 
 ```bash
 IMAGE_REF=pgsql-custom:local bash tools/dev_trivy_scan.sh
 ```
 
-Alternatively, install Trivy 0.75.0 on the host and run
+Alternatively, install any Trivy 0.76.x release on the host and run
 `IMAGE_REF=pgsql-custom:local scripts/trivy/scan-image.sh`.
-This entrypoint rejects other host versions to keep scans aligned with CI.
+This entrypoint rejects other minor series to keep scans aligned with CI.
 
 ## Telemetry policy
 
@@ -215,7 +251,7 @@ All repository Trivy entrypoints disable anonymous usage reporting with
 `TRIVY_SKIP_VERSION_CHECK=true`. Workflows using `trivy-action` receive these
 settings through workflow environment variables; Docker invocations pass them
 explicitly into the scanner container. The native local script exports both
-settings before invoking Trivy. Scans use Trivy 0.75.0 by default.
+settings before invoking Trivy. Scans use the newest Trivy 0.76.x by default.
 Vulnerability database downloads, security checks, JSON reports, and the
 HIGH/CRITICAL publication gate remain active. These opt-outs do not make
 builds or scans network-free.
@@ -228,7 +264,12 @@ workflow with the same gates. The image records the commit of this repository it
 was built from (`io.github.carvvf.pgsql-docker.repository.revision`), and both
 workflows rebuild when the active image carries another commit, also when the
 upstream version and runtime base are unchanged. Documentation-only commits are
-included. To rebuild without a new commit, request one manually:
+included. Daily, manual and push-triggered runs of `scan-active-image.yml` are
+serialized, so two of them never both rebuild the same commit: a run started
+while another is in progress waits, and GitHub keeps only the most recent waiting
+run. A waiting manual `force_rebuild` replaced this way must be requested again.
+A `publish-custom.yml` run started directly is serialized only with other
+publications. To rebuild without a new commit, request one manually:
 
 ```bash
 gh workflow run scan-active-image.yml --repo carvvf/pgsql-docker -f force_rebuild=true
@@ -247,8 +288,10 @@ scanner binaries:
 - `Docker: build local image` compiles `pgsql-custom:local` from the
   verified official PostgreSQL 18 release signal on Ubuntu 24.04.
 - `Test: PostgreSQL runtime` builds the image and runs the Ragtime-compatible
-  smoke test (prompts for a `ragtime-rag-orch` path, or leave it empty to use
-  the vendored fixture).
+  smoke test against the bootstrap scripts of `carvvf/ragtime-rag-orch`'s
+  `master` branch, downloaded with the GitHub CLI. Only when that download
+  fails does it ask, in the task terminal, for a local checkout path or an
+  empty answer to use the vendored fixture.
 - `Trivy: scan CVE` builds the image, runs a pinned Trivy container against
   the repository and local image, writes reports under `reports/trivy`, and
   fails on HIGH or CRITICAL findings.

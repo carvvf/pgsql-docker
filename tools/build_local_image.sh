@@ -11,6 +11,8 @@ docker build --platform linux/amd64 --pull --no-cache \
   --build-arg "PG_MAJOR=18" \
   --build-arg "GOSU_SOURCE_REF=${gosu_source_ref}" \
   --build-arg "GOSU_SOURCE_REVISION=${gosu_source_revision}" \
+  --build-arg "GO_TOOLCHAIN_VERSION=${go_toolchain_version}" \
+  --build-arg "GO_TOOLCHAIN_SHA256=${go_toolchain_sha256}" \
   --build-arg "ENTRYPOINT_SOURCE_COMMIT=${entrypoint_source_commit}" \
   --build-arg "POSTGRES_SOURCE_REF=${source_ref}" \
   --build-arg "POSTGRES_SOURCE_REVISION=${source_revision}" \
