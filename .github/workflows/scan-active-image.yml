@@ -242,26 +242,45 @@ jobs:
       - name: Resolve Trivy patch release
         id: trivy
         if: steps.input_decision.outputs.required == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$(bash scripts/trivy/resolve-version.sh)"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "- Trivy: ${version}" >> "${GITHUB_STEP_SUMMARY}"
 
+      # The scanner runs from the aquasec/trivy image of the resolved release.
+      # trivy-action installs its binary through get.trivy.dev, so a failure of
+      # that host stopped the scan before it started.
       - name: Scan active image with Trivy
         if: steps.input_decision.outputs.required == 'false'
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: ${{ steps.resolve.outputs.image_ref }}
-          version: v${{ steps.trivy.outputs.version }}
-          cache: false
-          format: json
-          output: trivy-report-initial.json
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
+        env:
+          IMAGE_REF: ${{ steps.resolve.outputs.image_ref }}
+          TRIVY_IMAGE: aquasec/trivy:${{ steps.trivy.outputs.version }}
+          TRIVY_CACHE_DIR: /tmp/trivy-cache
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${TRIVY_CACHE_DIR}"
+          docker pull "${TRIVY_IMAGE}"
+
+          docker run --rm \
+            -e TRIVY_DISABLE_TELEMETRY=true \
+            -e TRIVY_SKIP_VERSION_CHECK=true \
+            -e TRIVY_USERNAME \
+            -e TRIVY_PASSWORD \
+            -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" \
+            image \
+            --image-src remote \
+            --format json \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --pkg-types os,library \
+            --timeout 40m \
+            "${IMAGE_REF}" \
+            > trivy-report-initial.json
 
       - name: Summarize rebuild decision
         id: summary
@@ -361,8 +380,6 @@ jobs:
 
       - name: Resolve Trivy patch release
         id: trivy
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$(bash scripts/trivy/resolve-version.sh)"
@@ -372,16 +389,34 @@ jobs:
       # Deliberately scan mutable latest after publication. Its changed result
       # triggers the downstream update notification job below.
       - name: Scan rebuilt active image with Trivy
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: ${{ needs.initial_scan.outputs.image_ref }}
-          version: v${{ steps.trivy.outputs.version }}
-          cache: false
-          format: json
-          output: trivy-report-final.json
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
+        env:
+          IMAGE_REF: ${{ needs.initial_scan.outputs.image_ref }}
+          TRIVY_IMAGE: aquasec/trivy:${{ steps.trivy.outputs.version }}
+          TRIVY_CACHE_DIR: /tmp/trivy-cache
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${TRIVY_CACHE_DIR}"
+          docker pull "${TRIVY_IMAGE}"
+
+          docker run --rm \
+            -e TRIVY_DISABLE_TELEMETRY=true \
+            -e TRIVY_SKIP_VERSION_CHECK=true \
+            -e TRIVY_USERNAME \
+            -e TRIVY_PASSWORD \
+            -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" \
+            image \
+            --image-src remote \
+            --format json \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --pkg-types os,library \
+            --timeout 40m \
+            "${IMAGE_REF}" \
+            > trivy-report-final.json
 
       - name: Summarize final vulnerabilities
         id: summary

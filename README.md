@@ -217,14 +217,19 @@ an empty answer to use the vendored fixture; without a terminal it fails:
 IMAGE_REF=pgsql-custom:local RAGTIME_REPO=gh:carvvf/ragtime-rag-orch bash tests/test-postgres-image.sh
 ```
 
-Local and CI scans use the newest published patch release of Trivy 0.76.
-`scripts/trivy/resolve-version.sh` resolves it from GitHub's release list,
-ignoring drafts, pre-releases, and other minor series, so scanner fixes arrive
-without a repository change; moving to another minor series is a deliberate
-edit to `TRIVY_SERIES` in that script. Each workflow scan records the resolved
-version in its job summary. `TRIVY_VERSION` selects an explicit 0.76 release.
-The resolver requires curl and jq; it uses `GH_TOKEN`, `GITHUB_TOKEN`, or an
-authenticated GitHub CLI when available to avoid anonymous API rate limits.
+Local and CI scans use the newest patch release of Trivy 0.76, at or above
+0.76.1, published as an `aquasec/trivy` image. `scripts/trivy/resolve-version.sh`
+resolves it from the image's Docker Hub tags, ignoring release candidates and
+other minor series, so scanner fixes arrive without a repository change and the
+resolved version always has a pullable scanner image. Moving to another minor
+series or raising the minimum patch release is a deliberate edit to
+`TRIVY_SERIES` or `TRIVY_FLOOR` in that script. Each workflow scan records the
+resolved version in its job summary. `TRIVY_VERSION` selects an explicit 0.76
+release at or above the floor. The resolver requires curl and jq.
+
+Workflows run the scanner from that image rather than through `trivy-action`,
+whose installer downloads the binary through `get.trivy.dev`; scans therefore
+do not depend on that host.
 
 For a local Trivy filesystem, Dockerfile, and image scan, use the same
 Trivy container as CI; no host Trivy installation is required:
@@ -233,7 +238,7 @@ Trivy container as CI; no host Trivy installation is required:
 IMAGE_REF=pgsql-custom:local bash tools/dev_trivy_scan.sh
 ```
 
-Alternatively, install any Trivy 0.76.x release on the host and run
+Alternatively, install Trivy 0.76.1 or later 0.76.x on the host and run
 `IMAGE_REF=pgsql-custom:local scripts/trivy/scan-image.sh`.
 This entrypoint rejects other minor series to keep scans aligned with CI.
 
@@ -248,10 +253,10 @@ and records local database statistics.
 
 All repository Trivy entrypoints disable anonymous usage reporting with
 `TRIVY_DISABLE_TELEMETRY=true` and announcement/version requests with
-`TRIVY_SKIP_VERSION_CHECK=true`. Workflows using `trivy-action` receive these
-settings through workflow environment variables; Docker invocations pass them
-explicitly into the scanner container. The native local script exports both
-settings before invoking Trivy. Scans use the newest Trivy 0.76.x by default.
+`TRIVY_SKIP_VERSION_CHECK=true`. Workflow and local Docker scans run the
+`aquasec/trivy` image and pass both settings explicitly into the scanner
+container. The native local script exports both settings before invoking
+Trivy. Scans use the newest Trivy 0.76.x by default.
 Vulnerability database downloads, security checks, JSON reports, and the
 HIGH/CRITICAL publication gate remain active. These opt-outs do not make
 builds or scans network-free.

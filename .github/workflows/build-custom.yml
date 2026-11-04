@@ -160,26 +160,44 @@ jobs:
 
       - name: Resolve Trivy patch release
         id: trivy
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$(bash scripts/trivy/resolve-version.sh)"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "- Trivy: ${version}" >> "${GITHUB_STEP_SUMMARY}"
 
+      # The scanner runs from the aquasec/trivy image of the resolved release.
+      # trivy-action installs its binary through get.trivy.dev, so a failure of
+      # that host stopped the scan before it started.
       - name: Scan candidate with Trivy
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: ${{ env.IMAGE_REF }}
-          version: v${{ steps.trivy.outputs.version }}
-          cache: false
-          format: json
-          output: trivy-report-candidate-amd64.json
-          scanners: vuln
-          exit-code: '1'
-          severity: HIGH,CRITICAL
-          vuln-type: os,library
+        env:
+          TRIVY_IMAGE: aquasec/trivy:${{ steps.trivy.outputs.version }}
+          TRIVY_CACHE_DIR: /tmp/trivy-cache
+          IMAGE_ARCHIVE: /tmp/pgsql-custom-candidate-amd64.tar
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${TRIVY_CACHE_DIR}"
+          docker pull "${TRIVY_IMAGE}"
+          # The scanner reads an archive of the loaded candidate, so it needs
+          # no access to the Docker daemon.
+          docker save --output "${IMAGE_ARCHIVE}" "${IMAGE_REF}"
+
+          docker run --rm \
+            -e TRIVY_DISABLE_TELEMETRY=true \
+            -e TRIVY_SKIP_VERSION_CHECK=true \
+            -v "${IMAGE_ARCHIVE}:${IMAGE_ARCHIVE}:ro" \
+            -v "${TRIVY_CACHE_DIR}:/root/.cache/trivy" \
+            "${TRIVY_IMAGE}" \
+            image \
+            --input "${IMAGE_ARCHIVE}" \
+            --format json \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --pkg-types os,library \
+            --timeout 40m \
+            --exit-code 1 \
+            > trivy-report-candidate-amd64.json
 
       - name: Upload candidate Trivy report
         if: always()

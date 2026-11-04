@@ -324,8 +324,6 @@ jobs:
 
       - name: Resolve Trivy patch release
         id: trivy
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="$(bash scripts/trivy/resolve-version.sh)"
