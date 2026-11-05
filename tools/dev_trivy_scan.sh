@@ -66,6 +66,11 @@ scan_target() {
   local target="$3"
   shift 3
   local extra_args=("$@")
+  # Config scans do not use the vulnerability DB.
+  if [ "${mode}" != "config" ]; then
+    extra_args+=(--db-repository ghcr.io/aquasecurity/trivy-db:2
+      --db-repository mirror.gcr.io/aquasec/trivy-db:2)
+  fi
   local json_report="/reports/${timestamp}.${name}.json"
   local scan_status=0
 

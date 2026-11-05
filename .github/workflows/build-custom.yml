@@ -193,6 +193,8 @@ jobs:
             --input "${IMAGE_ARCHIVE}" \
             --format json \
             --scanners vuln \
+            --db-repository ghcr.io/aquasecurity/trivy-db:2 \
+            --db-repository mirror.gcr.io/aquasec/trivy-db:2 \
             --severity HIGH,CRITICAL \
             --pkg-types os,library \
             --timeout 40m \
