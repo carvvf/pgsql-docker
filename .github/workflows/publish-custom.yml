@@ -130,6 +130,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6.0.2
 
+      - name: Check vulnerability report policy
+        run: python3 -m unittest scripts.trivy.test_report_policy
+
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
@@ -355,14 +358,16 @@ jobs:
             --severity HIGH,CRITICAL \
             --pkg-types os,library \
             --timeout 40m \
-            --exit-code 1 \
+            --exit-code 0 \
             > /tmp/trivy-report-candidate-amd64.json
+
+          python3 scripts/trivy/report_policy.py /tmp/trivy-report-candidate-amd64.json --context "Candidate image"
 
       - name: Upload candidate Trivy report
         if: always()
         uses: actions/upload-artifact@v7.0.0
         with:
-          name: trivy-candidate-amd64-${{ github.run_id }}
+          name: trivy-candidate-amd64-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/trivy-report-candidate-amd64.json
           if-no-files-found: ignore
           retention-days: 14

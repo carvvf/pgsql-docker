@@ -1,5 +1,7 @@
 # PostgreSQL custom image
 
+CI publication blocks fixable HIGH/CRITICAL findings and reports findings without a listed fix as warnings. See the [CI security policy](docs/ci-security-policy.md).
+
 > [!NOTE]
 > **Written with AI assistance.** This document was generated with the help of an AI
 > assistant and may contain inaccuracies. Verify anything critical against the source code.
@@ -13,8 +15,9 @@ the matching PostgreSQL source tag and commit, the pinned `gosu` and
 `docker-library/postgres` entrypoint-script sources, and the Ubuntu runtime
 manifest digest. It rebuilds when any of these change or when the active image
 was built from another commit of this repository, scans the candidate
-with Trivy, and publishes it to GHCR only if HIGH and CRITICAL OS or library
-findings are absent.
+with Trivy, and publishes it to GHCR only if fixable HIGH and CRITICAL OS or
+library findings are absent. Findings without a listed fixed version produce
+explicit warning annotations and remain in the retained evidence.
 
 The runtime interface intentionally remains compatible with the official
 image and with Ragtime's PostgreSQL deployment:
@@ -54,9 +57,9 @@ versions, so that step is a deliberate, coordinated change requiring
 `pg_upgrade` (or dump/restore) against Ragtime's data volume. See AGENTS.md
 "Version and upgrade policy".
 
-The daily workflow deliberately reports failure after a clean rebuild. This is
-the downstream update signal: an operator should pull and redeploy the new
-image rather than treating the notification as a failed publication.
+The daily workflow completes successfully after a clean rebuild. Operators
+should review workflow summaries and published tags, then pull and redeploy
+the new image. Real build, scan, or runtime-check failures still fail the workflow.
 
 For a controlled rollout, use an immutable tag. For example:
 
@@ -282,8 +285,8 @@ gh workflow run scan-active-image.yml --repo carvvf/pgsql-docker -f force_rebuil
 
 The workflow runs the existing build, scan, runtime-test, and publication gates.
 After publication, follow the downstream update procedure above, retaining the
-data volumes. The deliberate failure notification after a clean rebuild remains
-part of that procedure.
+data volumes. A clean rebuild completes successfully; operators remain
+responsible for deploying the published image.
 
 ## VS Code tasks
 
@@ -318,7 +321,8 @@ own feature set relative to the official image (ICU, LLVM JIT, libxml/libxslt,
 LDAP, GSSAPI, PAM, systemd notify, PL/Perl, PL/Python, and PL/Tcl are all
 disabled) because Ragtime's contract does not use them: each is one fewer
 optional dependency this image has to carry, patch, and scan. A candidate
-with unresolved HIGH or CRITICAL findings is not published.
+with fixable HIGH or CRITICAL findings is not published. Findings without a
+listed fix are retained and reported as warnings.
 
 ## License and third-party components
 
