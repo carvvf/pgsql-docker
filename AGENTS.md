@@ -172,6 +172,11 @@ dump/restore) step.
 - Serialize scan/publish runs with a shared GitHub Actions concurrency group.
   This prevents competing runs from racing on `latest` or the custom sequence
   number.
+- GHCR retention must keep every kept tag pullable: keep the platform and
+  attestation manifests of every kept tag, which GHCR lists as untagged
+  versions, read them from the registry and fail without deleting anything if
+  it cannot be read, and read every page of the package and workflow-run
+  listings, since the oldest entries are on the last pages.
 
 ## CI expectations
 

@@ -44,7 +44,13 @@ jobs:
           cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
 
           set +e
-          versions_json="$(gh api -H 'Accept: application/vnd.github+json' "${package_scope}/packages/container/${package_name}/versions?per_page=100" 2>/tmp/pgsql-ghcr-retention.err)"
+          # Every page: the listing is newest first, so the oldest versions, the ones the
+          # policy deletes, are on the last pages.
+          versions_json="$(
+            gh api --paginate -H 'Accept: application/vnd.github+json' \
+              "${package_scope}/packages/container/${package_name}/versions?per_page=100" \
+              2>/tmp/pgsql-ghcr-retention.err | jq -s 'add // []'
+          )"
           versions_status=$?
           set -e
           if [ "${versions_status}" -ne 0 ]; then
@@ -73,25 +79,56 @@ jobs:
               | .id
             ' <<<"${versions_json}"
           )"
+          # Each tag names an OCI index whose platform and attestation manifests GHCR lists
+          # as separate untagged versions; deleting them breaks the tag that is kept.
+          referenced_digests=''
+          keep_reason() {
+            local version="$1" version_id updated_at
+            version_id="$(jq -r '.id' <<<"${version}")"
+            updated_at="$(jq -r '.updated_at // .created_at // ""' <<<"${version}")"
+            if jq -e '(.metadata.container.tags // []) | index("latest") != null' <<<"${version}" >/dev/null; then
+              echo contains-latest
+            elif grep -Fxq "${version_id}" <<<"${retained_version_ids}"; then
+              echo rollback-retention
+            elif grep -Fxq "$(jq -r '.name' <<<"${version}")" <<<"${referenced_digests}"; then
+              echo referenced-by-kept-tag
+            elif [ -z "${updated_at}" ] || [ "$(date -u -d "${updated_at}" +%s)" -ge "${cutoff_epoch}" ]; then
+              echo within-retention-or-missing-timestamp
+            fi
+          }
+
+          # The index of every kept tag is read from the registry; any failure stops the job
+          # before anything is deleted.
+          owner_lc="$(printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]')"
+          registry_token="$(
+            curl -fsS -u "${GITHUB_ACTOR:-token}:${GH_TOKEN}" \
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${owner_lc}/${package_name}:pull" \
+              | jq -er '.token'
+          )"
+          while IFS= read -r version; do
+            [ -n "$(keep_reason "${version}")" ] || continue
+            digest="$(jq -r '.name' <<<"${version}")"
+            manifest="$(
+              curl -fsS -H "Authorization: Bearer ${registry_token}" \
+                -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+                "https://ghcr.io/v2/${owner_lc}/${package_name}/manifests/${digest}"
+            )"
+            children="$(jq -r '.manifests[]?.digest' <<<"${manifest}")"
+            if [ -n "${children}" ]; then
+              referenced_digests="$(printf '%s\n%s' "${referenced_digests}" "${children}")"
+            fi
+          done < <(jq -c '.[] | select((.metadata.container.tags // []) | length > 0)' <<<"${versions_json}")
+
           while IFS= read -r version; do
             scanned=$((scanned + 1))
             version_id="$(jq -r '.id' <<<"${version}")"
             updated_at="$(jq -r '.updated_at // .created_at // ""' <<<"${version}")"
             tags="$(jq -r '(.metadata.container.tags // []) | join(",")' <<<"${version}")"
 
-            if jq -e '(.metadata.container.tags // []) | index("latest") != null' <<<"${version}" >/dev/null; then
+            reason="$(keep_reason "${version}")"
+            if [ -n "${reason}" ]; then
               kept=$((kept + 1))
-              echo "KEEP id=${version_id} tags=[${tags}] reason=contains-latest"
-              continue
-            fi
-            if grep -Fxq "${version_id}" <<<"${retained_version_ids}"; then
-              kept=$((kept + 1))
-              echo "KEEP id=${version_id} tags=[${tags}] reason=rollback-retention"
-              continue
-            fi
-            if [ -z "${updated_at}" ] || [ "$(date -u -d "${updated_at}" +%s)" -ge "${cutoff_epoch}" ]; then
-              kept=$((kept + 1))
-              echo "KEEP id=${version_id} tags=[${tags}] reason=within-retention-or-missing-timestamp"
+              echo "KEEP id=${version_id} tags=[${tags}] reason=${reason}"
               continue
             fi
 
@@ -130,8 +167,14 @@ jobs:
           cutoff_epoch="$(date -u -d "${RETENTION_DAYS} days ago" +%s)"
           deleted=0
           candidates=0
-          runs_json="$(gh api -H 'Accept: application/vnd.github+json' \
-            "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100")"
+          # Only runs older than the cutoff, on every page; the newest-first first page of
+          # all runs holds fewer than 60 days once the repository runs daily.
+          cutoff_date="$(date -u -d "@${cutoff_epoch}" +%Y-%m-%d)"
+          runs_json="$(
+            gh api --paginate -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100&created=%3C${cutoff_date}" \
+              | jq -s '{workflow_runs: map(.workflow_runs[])}'
+          )"
 
           while IFS= read -r run; do
             status="$(jq -r '.status' <<<"${run}")"

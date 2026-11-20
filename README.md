@@ -76,6 +76,27 @@ image: ghcr.io/carvvf/pgsql-docker:latest
 The GHCR package must be public or the deployment host must authenticate before
 pulling it.
 
+### Tag retention
+
+`retention-cleanup.yml` runs weekly and deletes old GHCR versions. It keeps:
+
+- the version tagged `latest`;
+- the ten newest custom rebuilds, for rollback;
+- every version updated in the last 60 days;
+- the platform and attestation manifests of every kept tag. Each tag names an
+  OCI index, and GHCR lists its manifests as separate untagged versions;
+  deleting them would make the kept tag unpullable.
+
+The workflow reads every page of the listings and fails without deleting
+anything if it cannot read a kept tag's index. Run it with `dry_run: true` to
+review its decisions:
+
+```bash
+gh workflow run retention-cleanup.yml --repo carvvf/pgsql-docker -f dry_run=true
+```
+
+Completed workflow runs older than 60 days are deleted by the same workflow.
+
 ## Downstream update
 
 The image is intended to replace the `postgres` service in Ragtime. Retain
