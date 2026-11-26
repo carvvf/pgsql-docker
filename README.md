@@ -7,12 +7,14 @@ CI publication blocks fixable HIGH/CRITICAL findings and reports findings withou
 > assistant and may contain inaccuracies. Verify anything critical against the source code.
 
 This repository publishes a hardened `linux/amd64` PostgreSQL image compiled
-from the verified upstream source release corresponding to `postgres:18`. Its
-final runtime base is the Ubuntu LTS release pinned as `UBUNTU_SERIES` in
-`tools/lib/build_inputs.sh`. Every resolved reference, check and label derives
-from that constant, and the tests keep the Dockerfile default for direct builds
-equal to it. A new LTS release is a reviewed change, listed on the Dependency
-Dashboard and proposed as a pull request only once approved.
+from the verified upstream source release corresponding to the official
+`postgres` image of the major pinned as `POSTGRES_MAJOR` in
+`tools/lib/build_inputs.sh`. Its final runtime base is the Ubuntu LTS release
+pinned as `UBUNTU_SERIES` in `tools/lib/build_inputs.sh`. Every resolved
+reference, check and label derives from that constant, and the tests keep the
+Dockerfile default for direct builds equal to it. A new LTS release is a
+reviewed change, listed on the Dependency Dashboard and proposed as a pull
+request only once approved.
 
 Its daily GitHub Actions workflow resolves the official-image manifest digest,
 the matching PostgreSQL source tag and commit, the pinned `gosu` and
@@ -123,9 +125,9 @@ correctly.
 
 ## Local build and validation
 
-Build the PostgreSQL 18 release currently identified by `postgres:18` from
-source on the pinned Ubuntu release, using the same input resolver as GitHub
-Actions:
+Build the release of the pinned PostgreSQL major currently identified by its
+official image from source on the pinned Ubuntu release, using the same input
+resolver as GitHub Actions:
 
 ```bash
 bash tools/build_local_image.sh
@@ -146,7 +148,7 @@ needed.
 To select a specific release within the supported major version:
 
 ```bash
-POSTGRES_SOURCE_REF=REL_18_6 bash tools/build_local_image.sh
+POSTGRES_SOURCE_REF=REL_<major>_<minor> bash tools/build_local_image.sh
 ```
 
 `tools/lib/build_inputs.sh` owns the shared resolver used by the local build,
@@ -164,8 +166,9 @@ Explicit digest references retain their release signal, and an explicit
 entrypoint commit is retained and verified during the Dockerfile checkout.
 
 The resolver rejects `postgres:latest`, references to other majors, and even an
-explicitly pinned digest whose image reports a major other than 18. Local
-builds pass `PG_MAJOR=18` explicitly. This preserves the existing data format
+explicitly pinned digest whose image reports a major other than the pinned one.
+Every build passes `PG_MAJOR` from `POSTGRES_MAJOR` explicitly, and the
+Dockerfile has no default for it. This preserves the existing data format
 contract; a major upgrade remains a separate coordinated operation. Ubuntu
 inputs must identify the official image of the pinned release.
 
@@ -327,7 +330,8 @@ The workspace provides these tasks without requiring locally installed lint or
 scanner binaries:
 
 - `Docker: build local image` compiles `pgsql-custom:local` from the
-  verified official PostgreSQL 18 release signal on the pinned Ubuntu release.
+  verified official release signal of the pinned PostgreSQL major on the pinned
+  Ubuntu release.
 - `Test: PostgreSQL runtime` builds the image and runs the Ragtime-compatible
   smoke test against the bootstrap scripts of `carvvf/ragtime-rag-orch`'s
   `master` branch, downloaded with the GitHub CLI. Only when that download

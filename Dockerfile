@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # The PostgreSQL release and its two auxiliary sources (gosu, and the
 # docker-library/postgres entrypoint scripts) are resolved locally and in CI
-# against postgres:18, its recorded gosu release, and docker-library/postgres's
+# against postgres:<POSTGRES_MAJOR>, its recorded gosu release, and docker-library/postgres's
 # current master, respectively. See AGENTS.md "Security and update policy".
 ARG POSTGRES_SOURCE_REPOSITORY=https://github.com/postgres/postgres.git
 ARG POSTGRES_SOURCE_REF
@@ -16,7 +16,9 @@ ARG ENTRYPOINT_SOURCE_COMMIT
 # only, as BuildKit requires a valid default for an ARG used in FROM;
 # tests/test_build_inputs.py keeps it equal to UBUNTU_SERIES.
 ARG UBUNTU_BASE_IMAGE=ubuntu:24.04
-ARG PG_MAJOR=18
+# Passed by every build from POSTGRES_MAJOR in tools/lib/build_inputs.sh; it has no
+# default, so a build without it stops in the source stage.
+ARG PG_MAJOR
 # An Ubuntu release's "golang-go" apt package stays at the Go minor it shipped
 # with (Go 1.22 for 24.04), which in time carries a long list of fixed Go standard
 # library CVEs (net/http, crypto/tls, encoding/*, ...) that end up
@@ -51,8 +53,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN test "${PG_MAJOR}" = 18 \
-    && case "${POSTGRES_SOURCE_REF}" in REL_18_*) ;; *) echo 'A PostgreSQL major 18 release tag is required.' >&2; exit 1 ;; esac \
+RUN test -n "${PG_MAJOR}" \
+    && case "${POSTGRES_SOURCE_REF}" in "REL_${PG_MAJOR}_"*) ;; *) echo "A PostgreSQL major ${PG_MAJOR} release tag is required." >&2; exit 1 ;; esac \
     && test -n "${POSTGRES_SOURCE_REF}" \
     && test -n "${POSTGRES_SOURCE_REVISION}" \
     && git clone --depth 1 --branch "${POSTGRES_SOURCE_REF}" \

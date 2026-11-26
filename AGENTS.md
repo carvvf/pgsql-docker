@@ -3,10 +3,11 @@
 ## Purpose and scope
 
 This repository builds and publishes a custom, hardened PostgreSQL container
-image from the upstream PostgreSQL source release corresponding to the
-`postgres:18` Docker Hub tag. Its final runtime base is the Ubuntu LTS release
-pinned as `UBUNTU_SERIES` in `tools/lib/build_inputs.sh`, and it
-is published to GitHub Container Registry (GHCR) for `linux/amd64`.
+image from the upstream PostgreSQL source release corresponding to the official
+`postgres` Docker Hub tag of the major pinned as `POSTGRES_MAJOR` in
+`tools/lib/build_inputs.sh`. Its final runtime base is the Ubuntu LTS release
+pinned as `UBUNTU_SERIES` in `tools/lib/build_inputs.sh`, and it is published
+to GitHub Container Registry (GHCR) for `linux/amd64`.
 
 The primary purpose is to reduce the exposure window when the official
 `postgres` image (Debian- or Alpine-based, maintained by `docker-library`, not
@@ -110,22 +111,26 @@ silently cross a major-version boundary, because doing so against an existing
 data volume breaks the running database without an explicit `pg_upgrade` (or
 dump/restore) step.
 
-- Track the official `postgres:18` tag as the version-parity signal, the same
+- Track the official `postgres` tag of the pinned major as the version-parity
+  signal. `POSTGRES_MAJOR` in `tools/lib/build_inputs.sh` is the source every
+  reference, check, label and build argument derives from. Track it the same
   way `qdrant-docker` tracks `qdrant/qdrant:latest` — to resolve the current
   upstream minor version and its manifest digest, not to reuse its layers.
 - Automatic daily rebuilds apply only within the pinned major version: a new
-  PostgreSQL 18 minor release, or a changed Ubuntu runtime-base digest, or
+  minor release of the pinned major, or a changed Ubuntu runtime-base digest, or
   HIGH/CRITICAL findings in the active image.
-- A PostgreSQL major-version bump (for example 18 to 19) is never automatic.
-  It requires an explicit, user-authorized change to the pinned major
-  version, and must ship with operator guidance for running `pg_upgrade` (or
-  an equivalent dump/restore) against Ragtime's `postgres_data` volume before
-  the new image is deployed.
+- A PostgreSQL major-version bump (for example 18 to 19) is never automatic. It
+  requires an explicit, user-authorized change of `POSTGRES_MAJOR`, which
+  Renovate lists on the Dependency Dashboard and proposes as a pull request
+  only once approved, and it must ship with operator guidance for running
+  `pg_upgrade` (or an equivalent dump/restore) against Ragtime's
+  `postgres_data` volume before the new image is deployed.
 
 ## Security and update policy
 
 - Resolve the official PostgreSQL minor version and the official image's
-  manifest digest during CI (from `postgres:18`), then resolve and verify the
+  manifest digest during CI (from the official tag of the pinned major), then
+  resolve and verify the
   matching upstream PostgreSQL source tag and commit. Record all immutable
   identifiers in OCI labels and workflow output.
 - Resolve and pin an immutable commit for `gosu` (tianon/gosu) source, built
@@ -192,8 +197,8 @@ than copying Qdrant- or Unoserver-specific logic.
 The expected checks are:
 
 1. Resolve the official PostgreSQL minor version and source tag/commit, the
-   official `postgres:18` image digest, the Ubuntu runtime-base digest, the
-   pinned `gosu` source commit, and the Go toolchain used to build it.
+   official image digest of the pinned major, the Ubuntu runtime-base digest,
+   the pinned `gosu` source commit, and the Go toolchain used to build it.
 2. Scan the active GHCR `latest` image and retain the report, unless a
    build-input signal in item 3 (or a manual request) already requires a
    rebuild; the candidate and the republished `latest` are scanned anyway.

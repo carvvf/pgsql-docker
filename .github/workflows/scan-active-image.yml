@@ -81,9 +81,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # Pulling the major-pinned "postgres:18" tag (not "postgres:latest")
-      # structurally prevents this daily job from ever resolving a PG19
-      # candidate on its own; see AGENTS.md "Version and upgrade policy".
+      # Pulling the official image tag of POSTGRES_MAJOR (not "postgres:latest")
+      # structurally prevents this daily job from ever resolving the next major
+      # on its own; see AGENTS.md "Version and upgrade policy".
       - name: Resolve source and active image targets
         id: resolve
         run: |

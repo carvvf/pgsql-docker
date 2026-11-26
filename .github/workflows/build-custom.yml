@@ -9,7 +9,7 @@ on:
         required: false
         default: ''
       postgres_source_ref:
-        description: Optional PostgreSQL major 18 release tag; empty follows postgres:18
+        description: Optional release tag of the major pinned as POSTGRES_MAJOR; empty follows its official image
         required: false
         default: ''
       postgres_source_revision:
@@ -17,11 +17,11 @@ on:
         required: false
         default: ''
       postgres_upstream_version:
-        description: Optional PostgreSQL major 18 version; verified against the official image
+        description: Optional version of the major pinned as POSTGRES_MAJOR; verified against the official image
         required: false
         default: ''
       postgres_upstream_digest:
-        description: Optional postgres:18 manifest digest for provenance
+        description: Optional official image manifest digest for provenance
         required: false
         default: ''
       gosu_source_ref:
@@ -156,6 +156,7 @@ jobs:
           cache-from: type=gha,scope=pgsql-source-amd64
           cache-to: type=gha,mode=max,scope=pgsql-source-amd64
           build-args: |
+            PG_MAJOR=${{ steps.build_inputs.outputs.postgres_major }}
             POSTGRES_SOURCE_REF=${{ steps.build_inputs.outputs.source_ref }}
             POSTGRES_SOURCE_REVISION=${{ steps.build_inputs.outputs.source_revision }}
             POSTGRES_UPSTREAM_VERSION=${{ steps.build_inputs.outputs.upstream_version }}

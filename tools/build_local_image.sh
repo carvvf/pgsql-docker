@@ -8,7 +8,7 @@ source "${SCRIPT_DIR}/lib/build_inputs.sh"
 
 resolve_build_inputs
 docker build --platform linux/amd64 --pull --no-cache \
-  --build-arg "PG_MAJOR=18" \
+  --build-arg "PG_MAJOR=${POSTGRES_MAJOR}" \
   --build-arg "GOSU_SOURCE_REF=${gosu_source_ref}" \
   --build-arg "GOSU_SOURCE_REVISION=${gosu_source_revision}" \
   --build-arg "GO_TOOLCHAIN_VERSION=${go_toolchain_version}" \
