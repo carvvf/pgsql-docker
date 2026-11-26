@@ -1,12 +1,13 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
-  // Renovate proposes only what the image workflows do not move on their own. Rebuilds
+  // Renovate proposes only what the image workflows do not move on their own, including
+  // the module versions the gosu build upgrades to (build/gosu-modules). Rebuilds
   // already take the newest PostgreSQL minor of the pinned major, the newest Go patch of
   // the pinned series, the Ubuntu base digest and its package upgrades, the entrypoint
   // commit and the newest Trivy patch of its line.
   // Keep pinned GitHub Actions on a commit digest, with the release tag in a comment.
   extends: ["helpers:pinGitHubActionDigests"],
-  enabledManagers: ["dockerfile", "github-actions", "custom.regex"],
+  enabledManagers: ["dockerfile", "github-actions", "custom.regex", "gomod"],
   // The Dependency Dashboard lists the reviewed changes: a new Ubuntu LTS release and a
   // new PostgreSQL major. Each is proposed as its own pull request only once approved
   // there. Every other update goes in one cumulative pull request. Nothing is merged
@@ -15,6 +16,9 @@
   automerge: false,
   // Major updates stay in the cumulative pull request instead of a branch of their own.
   separateMajorMinor: false,
+  // build/gosu-modules holds the module versions the gosu build upgrades to. Renovate
+  // updates its go.mod and regenerates the checksums of its go.sum with Go itself.
+  postUpdateOptions: ["gomodTidy"],
   customManagers: [
     {
       // Annotated constants of tools/lib/build_inputs.sh: UBUNTU_SERIES, POSTGRES_MAJOR.

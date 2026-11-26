@@ -71,6 +71,9 @@ jobs:
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
+      - name: Check the gosu module checksums
+        run: python3 -m unittest discover -s tests -p test_gosu_modules.py
+
       - name: Check the pending package upgrade check
         run: python3 -m unittest discover -s tests -p test_package_upgrades.py
 

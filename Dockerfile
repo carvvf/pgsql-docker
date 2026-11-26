@@ -104,17 +104,24 @@ RUN curl --fail --silent --show-error --location \
     && rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 COPY --from=source /source/gosu /source/gosu
-COPY build/gosu-dependencies.sum /tmp/gosu-dependencies.sum
+COPY build/gosu-modules/go.mod build/gosu-modules/go.sum /tmp/gosu-modules/
 WORKDIR /source/gosu
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local \
     GOSUMDB=sum.golang.org
 # Disable both local Go telemetry counters and uploads before compiling gosu.
-# Upgrade vulnerable upstream module pins using committed Go module checksums.
+# Upgrade the upstream module pins to the direct requirements of
+# build/gosu-modules/go.mod, using the checksums committed in its go.sum. The
+# module list is split into separate go get arguments on purpose.
+# hadolint ignore=SC2086
 RUN --mount=type=cache,target=/root/go/pkg/mod,id=pgsql-docker-gosu-gomod,sharing=locked \
     go telemetry off \
-    && cat /tmp/gosu-dependencies.sum >> go.sum \
-    && go get github.com/moby/sys/user@v0.4.1 golang.org/x/sys@v0.44.0 \
+    && modules="$(awk '/^require \(/ { block = 1; next } block && /^\)/ { block = 0 } \
+        block && !/indirect/ { print $1 "@" $2 } /^require [^(]/ && !/indirect/ { print $2 "@" $3 }' \
+        /tmp/gosu-modules/go.mod)" \
+    && test -n "${modules}" \
+    && cat /tmp/gosu-modules/go.sum >> go.sum \
+    && go get ${modules} \
     && go mod verify \
     && go build -mod=readonly -trimpath -ldflags '-s -w' -o /out/gosu . \
     && /out/gosu --version

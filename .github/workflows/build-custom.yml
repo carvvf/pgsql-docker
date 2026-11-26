@@ -116,6 +116,9 @@ jobs:
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
+      - name: Check the gosu module checksums
+        run: python3 -m unittest discover -s tests -p test_gosu_modules.py
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4.0.0
 

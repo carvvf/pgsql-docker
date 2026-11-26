@@ -138,6 +138,9 @@ jobs:
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
+      - name: Check the gosu module checksums
+        run: python3 -m unittest discover -s tests -p test_gosu_modules.py
+
       # PostgreSQL's on-disk format is not compatible across major versions
       # (see AGENTS.md "Version and upgrade policy"). Pulling the
       # official image tag of POSTGRES_MAJOR, rather than "postgres:latest",
