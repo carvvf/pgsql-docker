@@ -1,0 +1,26 @@
+name: Pull request checks
+run-name: Checks for pull request ${{ github.event.pull_request.number }}
+
+# Builds, scans and tests the PostgreSQL image of every pull request to master through
+# build-custom.yml, which resolves the current verified build inputs, applies the
+# vulnerability policy of publication and never publishes. The reviewer sees the result
+# before merging; nothing is merged automatically. Pull requests opened by the Renovate
+# GitHub App start it too.
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+# A new push to the pull request replaces the checks of the previous one.
+concurrency:
+  group: pull-request-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-custom.yml
+    permissions:
+      contents: read

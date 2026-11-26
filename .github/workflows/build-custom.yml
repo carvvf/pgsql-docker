@@ -47,25 +47,32 @@ on:
   workflow_call:
     inputs:
       image_tag_suffix:
-        required: true
+        required: false
+        default: ''
         type: string
       postgres_source_ref:
-        required: true
+        required: false
+        default: ''
         type: string
       postgres_source_revision:
-        required: true
+        required: false
+        default: ''
         type: string
       postgres_upstream_version:
-        required: true
+        required: false
+        default: ''
         type: string
       postgres_upstream_digest:
-        required: true
+        required: false
+        default: ''
         type: string
       gosu_source_ref:
-        required: true
+        required: false
+        default: ''
         type: string
       gosu_source_revision:
-        required: true
+        required: false
+        default: ''
         type: string
       go_toolchain_version:
         required: false
@@ -76,13 +83,16 @@ on:
         type: string
         default: ''
       entrypoint_source_commit:
-        required: true
+        required: false
+        default: ''
         type: string
       ubuntu_base_ref:
-        required: true
+        required: false
+        default: ''
         type: string
       ubuntu_base_digest:
-        required: true
+        required: false
+        default: ''
         type: string
 
 env:

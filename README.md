@@ -311,6 +311,11 @@ After publication, follow the downstream update procedure above, retaining the
 data volumes. A clean rebuild completes successfully; operators remain
 responsible for deploying the published image.
 
+Every pull request to `master` starts `pull-request.yml`, which runs
+`build-custom.yml` with the current verified build inputs: build, Trivy scan under the
+publication vulnerability policy, and the runtime test of the `linux/amd64` candidate.
+It publishes nothing; review its result before merging.
+
 ## VS Code tasks
 
 The workspace provides these tasks without requiring locally installed lint or
