@@ -47,6 +47,13 @@ resolve_source_revision() {
 GO_TOOLCHAIN_SERIES='1.27'
 GO_RELEASES_URL='https://go.dev/dl/?mode=json&include=all'
 
+# Ubuntu release of the runtime base. Every resolved reference, check and label
+# derives from it; the Dockerfile default for direct builds mirrors it under test.
+# A new LTS release is a reviewed change, with its tests and migration notes: Renovate
+# lists it on the Dependency Dashboard and opens its pull request only once approved.
+# renovate: datasource=docker depName=ubuntu versioning=ubuntu
+UBUNTU_SERIES='24.04'
+
 resolve_go_toolchain() {
   local requested_version="${GO_TOOLCHAIN_VERSION:-}"
   local requested_sha256="${GO_TOOLCHAIN_SHA256:-}"
@@ -184,13 +191,14 @@ resolve_build_inputs() {
   fi
   ubuntu_base_ref="${UBUNTU_BASE_IMAGE:-}"
   if [ -z "${ubuntu_base_ref}" ]; then
-    ubuntu_base_ref="ubuntu:24.04"
+    ubuntu_base_ref="ubuntu:${UBUNTU_SERIES}"
     if [ -n "${requested_digest}" ]; then
       ubuntu_base_ref="ubuntu@${requested_digest}"
     fi
   fi
-  if [[ ! "${ubuntu_base_ref}" =~ ^ubuntu(:24\.04|@sha256:[a-f0-9]{64})$ ]]; then
-    build_input_error "An official Ubuntu 24.04 reference is required: ${ubuntu_base_ref}"
+  local ubuntu_ref_pattern="^ubuntu(:${UBUNTU_SERIES//./\\.}|@sha256:[a-f0-9]{64})$"
+  if [[ ! "${ubuntu_base_ref}" =~ ${ubuntu_ref_pattern} ]]; then
+    build_input_error "An official Ubuntu ${UBUNTU_SERIES} reference is required: ${ubuntu_base_ref}"
     return 1
   fi
   ubuntu_base_digest="$(pull_image_digest "${ubuntu_base_ref}")"
@@ -201,8 +209,8 @@ resolve_build_inputs() {
   ubuntu_base_ref="ubuntu@${ubuntu_base_digest}"
   local ubuntu_version
   ubuntu_version="$(docker image inspect "${ubuntu_base_ref}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
-  if [ "${ubuntu_version}" != '24.04' ]; then
-    build_input_error "Ubuntu 24.04 is required; resolved ${ubuntu_version}."
+  if [ "${ubuntu_version}" != "${UBUNTU_SERIES}" ]; then
+    build_input_error "Ubuntu ${UBUNTU_SERIES} is required; resolved ${ubuntu_version}."
     return 1
   fi
   resolve_go_toolchain || return
@@ -224,5 +232,6 @@ write_build_inputs() {
     "go_toolchain_sha256=${go_toolchain_sha256}" \
     "entrypoint_source_commit=${entrypoint_source_commit}" \
     "ubuntu_base_ref=${ubuntu_base_ref}" \
-    "ubuntu_base_digest=${ubuntu_base_digest}"
+    "ubuntu_base_digest=${ubuntu_base_digest}" \
+    "ubuntu_series=${UBUNTU_SERIES}"
 }

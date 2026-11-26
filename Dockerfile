@@ -11,10 +11,14 @@ ARG GOSU_SOURCE_REF
 ARG GOSU_SOURCE_REVISION
 ARG ENTRYPOINT_SOURCE_REPOSITORY=https://github.com/docker-library/postgres.git
 ARG ENTRYPOINT_SOURCE_COMMIT
+# Every resolved build passes the Ubuntu reference and release from
+# UBUNTU_SERIES in tools/lib/build_inputs.sh. This default serves direct builds
+# only, as BuildKit requires a valid default for an ARG used in FROM;
+# tests/test_build_inputs.py keeps it equal to UBUNTU_SERIES.
 ARG UBUNTU_BASE_IMAGE=ubuntu:24.04
 ARG PG_MAJOR=18
-# ubuntu:24.04's "golang-go" apt package is frozen at Go 1.22 (from the
-# 24.04 release), which by now carries a long list of fixed Go standard
+# An Ubuntu release's "golang-go" apt package stays at the Go minor it shipped
+# with (Go 1.22 for 24.04), which in time carries a long list of fixed Go standard
 # library CVEs (net/http, crypto/tls, encoding/*, ...) that end up
 # statically embedded in any binary it compiles, including gosu, even though
 # gosu itself barely touches those packages. Building gosu with a current,
@@ -186,11 +190,12 @@ ARG ENTRYPOINT_SOURCE_REPOSITORY
 ARG ENTRYPOINT_SOURCE_COMMIT
 ARG UBUNTU_BASE_IMAGE
 ARG UBUNTU_BASE_DIGEST=unknown
+ARG UBUNTU_SERIES
 ARG PG_MAJOR
 ARG SOURCE_REPOSITORY=https://github.com/carvvf/pgsql-docker
 
 LABEL org.opencontainers.image.title="PostgreSQL custom image"
-LABEL org.opencontainers.image.description="PostgreSQL rebuilt from verified source on Ubuntu 24.04"
+LABEL org.opencontainers.image.description="PostgreSQL rebuilt from verified source on Ubuntu ${UBUNTU_SERIES}"
 LABEL org.opencontainers.image.documentation="${SOURCE_REPOSITORY}"
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}"
 LABEL org.opencontainers.image.url="${SOURCE_REPOSITORY}"
@@ -214,7 +219,7 @@ LABEL io.github.carvvf.pgsql-docker.runtime.base.digest="${UBUNTU_BASE_DIGEST}"
 # Forces a fresh apt-get run on every build even when GHA layer caching would
 # otherwise reuse this layer unchanged (same base digest, same PostgreSQL
 # source revision): apt mirrors publish OS security patches far more often
-# than the ubuntu:24.04 tag digest changes, and this layer is how those
+# than the Ubuntu tag digest changes, and this layer is how those
 # patches reach the image.
 ARG CACHEBUST=unknown
 

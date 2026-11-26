@@ -168,6 +168,7 @@ jobs:
             ENTRYPOINT_SOURCE_COMMIT=${{ steps.build_inputs.outputs.entrypoint_source_commit }}
             UBUNTU_BASE_IMAGE=${{ steps.build_inputs.outputs.ubuntu_base_ref }}
             UBUNTU_BASE_DIGEST=${{ steps.build_inputs.outputs.ubuntu_base_digest }}
+            UBUNTU_SERIES=${{ steps.build_inputs.outputs.ubuntu_series }}
             SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
             CACHEBUST=${{ github.run_id }}
 

@@ -21,5 +21,6 @@ docker build --platform linux/amd64 --pull --no-cache \
   --build-arg "POSTGRES_IMAGE_VERSION=${upstream_version}-local" \
   --build-arg "UBUNTU_BASE_IMAGE=${ubuntu_base_ref}" \
   --build-arg "UBUNTU_BASE_DIGEST=${ubuntu_base_digest}" \
+  --build-arg "UBUNTU_SERIES=${UBUNTU_SERIES}" \
   --build-arg "CACHEBUST=$(date -u +%s)" \
   -t "${IMAGE_REF:-pgsql-custom:local}" "${REPO_ROOT}"

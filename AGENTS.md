@@ -4,7 +4,8 @@
 
 This repository builds and publishes a custom, hardened PostgreSQL container
 image from the upstream PostgreSQL source release corresponding to the
-`postgres:18` Docker Hub tag. Its final runtime base is `ubuntu:24.04`, and it
+`postgres:18` Docker Hub tag. Its final runtime base is the Ubuntu LTS release
+pinned as `UBUNTU_SERIES` in `tools/lib/build_inputs.sh`, and it
 is published to GitHub Container Registry (GHCR) for `linux/amd64`.
 
 The primary purpose is to reduce the exposure window when the official
@@ -140,7 +141,11 @@ dump/restore) step.
   with its official linux/amd64 archive SHA-256, which the build verifies.
   Record the version in OCI labels and workflow output. Moving to another Go
   minor series is an explicit change.
-- Use `ubuntu:24.04` as the final runtime base and resolve its manifest digest
+- Use the Ubuntu LTS release pinned as `UBUNTU_SERIES` in
+  `tools/lib/build_inputs.sh` as the final runtime base. Derive every
+  reference, check and label from it, keep the Dockerfile default equal to it
+  under test, and treat a move to a new LTS release as an explicit,
+  reviewed change with its own tests. Resolve the runtime-base manifest digest
   during CI. Keep the Dockerfile small, avoid unnecessary runtime packages,
   clean package metadata, and do not embed credentials.
 - Force the runtime `apt-get update/upgrade/install` layer to actually re-run
@@ -151,7 +156,7 @@ dump/restore) step.
   caching reuses the previous apt layer unchanged, and the rebuild silently
   stops picking up new OS security patches — defeating the daily-rebuild
   security model, since apt mirrors publish patches far more often than the
-  `ubuntu:24.04` tag digest changes. (`qdrant-docker` shipped without this at
+  Ubuntu tag digest changes. (`qdrant-docker` shipped without this at
   first and had to add it back; carry the fix forward from the start here.)
 - A source rebuild can remediate fixable Ubuntu CVEs and upstream PostgreSQL
   dependencies only when their respective upstream releases contain a fix. It

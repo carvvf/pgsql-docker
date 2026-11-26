@@ -7,8 +7,12 @@ CI publication blocks fixable HIGH/CRITICAL findings and reports findings withou
 > assistant and may contain inaccuracies. Verify anything critical against the source code.
 
 This repository publishes a hardened `linux/amd64` PostgreSQL image compiled
-from the verified upstream source release corresponding to `postgres:18`.
-Its final runtime base is `ubuntu:24.04`.
+from the verified upstream source release corresponding to `postgres:18`. Its
+final runtime base is the Ubuntu LTS release pinned as `UBUNTU_SERIES` in
+`tools/lib/build_inputs.sh`. Every resolved reference, check and label derives
+from that constant, and the tests keep the Dockerfile default for direct builds
+equal to it. A new LTS release is a reviewed change, listed on the Dependency
+Dashboard and proposed as a pull request only once approved.
 
 Its daily GitHub Actions workflow resolves the official-image manifest digest,
 the matching PostgreSQL source tag and commit, the pinned `gosu` and
@@ -120,7 +124,8 @@ correctly.
 ## Local build and validation
 
 Build the PostgreSQL 18 release currently identified by `postgres:18` from
-source on Ubuntu 24.04, using the same input resolver as GitHub Actions:
+source on the pinned Ubuntu release, using the same input resolver as GitHub
+Actions:
 
 ```bash
 bash tools/build_local_image.sh
@@ -130,7 +135,7 @@ The VS Code `Docker: build local image` task invokes this entrypoint. It pulls
 the official `linux/amd64` image as a release signal, reads `PG_VERSION`,
 `PG_MAJOR`, and `GOSU_VERSION`, resolves the matching PostgreSQL and gosu source
 tags and commits, pins the `docker-library/postgres` master commit for the
-entrypoint scripts, resolves the Ubuntu 24.04 runtime manifest digest, and
+entrypoint scripts, resolves the pinned Ubuntu runtime manifest digest, and
 selects the Go toolchain used to compile gosu (see below).
 The official PostgreSQL image is not used as the runtime base. All resolved
 values are passed explicitly to the Dockerfile; every source checkout must
@@ -158,20 +163,20 @@ explicit release override must resolve to its verified upstream commit.
 Explicit digest references retain their release signal, and an explicit
 entrypoint commit is retained and verified during the Dockerfile checkout.
 
-The resolver rejects `postgres:latest`, references to other majors, and even
-an explicitly pinned digest whose image reports a major other than 18.
-Local builds pass `PG_MAJOR=18` explicitly. This preserves the existing data
-format contract; a major upgrade remains a separate coordinated operation.
-Ubuntu inputs must identify the official 24.04 image.
+The resolver rejects `postgres:latest`, references to other majors, and even an
+explicitly pinned digest whose image reports a major other than 18. Local
+builds pass `PG_MAJOR=18` explicitly. This preserves the existing data format
+contract; a major upgrade remains a separate coordinated operation. Ubuntu
+inputs must identify the official image of the pinned release.
 
 Local OCI versions use `<postgres-version>-local`; published images retain
 `<postgres-version>-custom.<N>`. Both paths record all three source revisions,
 the official-image digest, and the runtime-base digest. The image version label
-is set explicitly instead of inheriting Ubuntu's `24.04` label. Direct Dockerfile
-builds require verified source arguments; there are no static source-version
-or entrypoint-commit fallbacks. Input parity and provenance do not guarantee
-binary reproducibility across different build times. Publication still requires
-the existing vulnerability and runtime gates.
+is set explicitly instead of inheriting Ubuntu's release label. Direct
+Dockerfile builds require verified source arguments; there are no static
+source-version or entrypoint-commit fallbacks. Input parity and provenance do
+not guarantee binary reproducibility across different build times. Publication
+still requires the existing vulnerability and runtime gates.
 
 The `gosu` build uses the newest stable patch release of Go 1.27. The resolver
 reads Go's release index (`https://go.dev/dl/?mode=json&include=all`), ignores
@@ -322,7 +327,7 @@ The workspace provides these tasks without requiring locally installed lint or
 scanner binaries:
 
 - `Docker: build local image` compiles `pgsql-custom:local` from the
-  verified official PostgreSQL 18 release signal on Ubuntu 24.04.
+  verified official PostgreSQL 18 release signal on the pinned Ubuntu release.
 - `Test: PostgreSQL runtime` builds the image and runs the Ragtime-compatible
   smoke test against the bootstrap scripts of `carvvf/ragtime-rag-orch`'s
   `master` branch, downloaded with the GitHub CLI. Only when that download
