@@ -1,0 +1,79 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  // Renovate proposes only what the image workflows do not move on their own, including
+  // the module versions the gosu build upgrades to (build/gosu-modules). Rebuilds
+  // already take the newest PostgreSQL minor of the pinned major, the newest Go patch of
+  // the pinned series, the Ubuntu base digest and its package upgrades, the entrypoint
+  // commit and the newest Trivy patch of its line.
+  // Keep pinned GitHub Actions on a commit digest, with the release tag in a comment.
+  extends: ["helpers:pinGitHubActionDigests"],
+  enabledManagers: ["dockerfile", "github-actions", "custom.regex", "gomod"],
+  // The Dependency Dashboard lists the reviewed changes: a new Ubuntu LTS release and a
+  // new PostgreSQL major. Each is proposed as its own pull request only once approved
+  // there. Every other update goes in one cumulative pull request. Nothing is merged
+  // automatically.
+  dependencyDashboard: { enabled: true },
+  automerge: false,
+  // Major updates stay in the cumulative pull request instead of a branch of their own.
+  separateMajorMinor: false,
+  // build/gosu-modules holds the module versions the gosu build upgrades to. Renovate
+  // updates its go.mod and regenerates the checksums of its go.sum with Go itself.
+  postUpdateOptions: ["gomodTidy"],
+  customManagers: [
+    {
+      // Annotated constants of tools/lib/build_inputs.sh: UBUNTU_SERIES, POSTGRES_MAJOR.
+      customType: "regex",
+      managerFilePatterns: ["/^tools/lib/build_inputs\\.sh$/"],
+      matchStrings: [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?\\n[A-Z_]+='(?<currentValue>[^']+)'",
+      ],
+      versioningTemplate: "{{#if versioning}}{{{versioning}}}{{else}}docker{{/if}}",
+    },
+    {
+      // Only the Go minor series is pinned; the build takes its newest patch release.
+      customType: "regex",
+      managerFilePatterns: ["/^tools/lib/build_inputs\\.sh$/"],
+      matchStrings: ["GO_TOOLCHAIN_SERIES='(?<currentValue>\\d+\\.\\d+)'"],
+      datasourceTemplate: "golang-version",
+      depNameTemplate: "go",
+      extractVersionTemplate: "^(?<version>\\d+\\.\\d+)",
+      versioningTemplate: "loose",
+    },
+    {
+      // Only the Trivy release line is pinned; resolve-version.sh takes its newest patch.
+      // TRIVY_FLOOR is not rewritten: a floor below the new line is still satisfied.
+      customType: "regex",
+      managerFilePatterns: ["/^scripts/trivy/resolve-version\\.sh$/"],
+      matchStrings: ["TRIVY_SERIES='(?<currentValue>\\d+\\.\\d+)'"],
+      datasourceTemplate: "docker",
+      depNameTemplate: "aquasec/trivy",
+      extractVersionTemplate: "^(?<version>\\d+\\.\\d+)\\.\\d+$",
+      versioningTemplate: "loose",
+    },
+  ],
+  packageRules: [
+    {
+      // One cumulative pull request per run, rebased while new updates arrive.
+      matchPackageNames: ["*"],
+      groupName: "uncovered dependencies",
+    },
+    {
+      // UBUNTU_SERIES and the Dockerfile default that mirrors it move together.
+      matchDepNames: ["ubuntu"],
+      versioning: "ubuntu",
+      dependencyDashboardApproval: true,
+      groupName: "Ubuntu LTS release",
+      prBodyNotes: [
+        "A new Ubuntu LTS release changes the runtime libraries PostgreSQL links against (OpenSSL, readline, zlib) and the build toolchain. Review the release notes, the pull request checks and the Ragtime runtime test before merging.",
+      ],
+    },
+    {
+      matchDepNames: ["postgres"],
+      dependencyDashboardApproval: true,
+      groupName: "PostgreSQL major",
+      prBodyNotes: [
+        "A PostgreSQL major is not compatible on disk with the previous one. Before merging, ship and test the pg_upgrade (or dump/restore) procedure for Ragtime's postgres_data volume, and make ragtime-rag-orch accept the new major.",
+      ],
+    },
+  ],
+}

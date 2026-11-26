@@ -60,6 +60,7 @@ jobs:
       entrypoint_changed: ${{ steps.resolve.outputs.entrypoint_changed }}
       ubuntu_base_changed: ${{ steps.resolve.outputs.ubuntu_base_changed }}
       repository_changed: ${{ steps.resolve.outputs.repository_changed }}
+      packages_changed: ${{ steps.resolve.outputs.packages_changed }}
       has_findings: ${{ steps.summary.outputs.has_findings }}
       needs_rebuild: ${{ steps.summary.outputs.needs_rebuild }}
 
@@ -70,6 +71,12 @@ jobs:
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
+      - name: Check the gosu module checksums
+        run: python3 -m unittest discover -s tests -p test_gosu_modules.py
+
+      - name: Check the pending package upgrade check
+        run: python3 -m unittest discover -s tests -p test_package_upgrades.py
+
       - name: Log in to GHCR
         uses: docker/login-action@v4.0.0
         with:
@@ -77,15 +84,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # Pulling the major-pinned "postgres:18" tag (not "postgres:latest")
-      # structurally prevents this daily job from ever resolving a PG19
-      # candidate on its own; see AGENTS.md "Version and upgrade policy".
+      # Pulling the official image tag of POSTGRES_MAJOR (not "postgres:latest")
+      # structurally prevents this daily job from ever resolving the next major
+      # on its own; see AGENTS.md "Version and upgrade policy".
       - name: Resolve source and active image targets
         id: resolve
         run: |
           set -euo pipefail
 
           source tools/lib/build_inputs.sh
+          source tools/lib/package_upgrades.sh
           resolve_build_inputs
 
           owner_lc="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
@@ -98,6 +106,8 @@ jobs:
           entrypoint_changed=true
           ubuntu_base_changed=true
           repository_changed=true
+          packages_changed=false
+          package_upgrades=''
 
           if docker pull "${image_ref}"; then
             active_exists=true
@@ -132,6 +142,13 @@ jobs:
             if [ "${active_repository_revision}" = "${GITHUB_SHA}" ]; then
               repository_changed=false
             fi
+            # The runtime stage upgrades the Ubuntu packages on every build, but a
+            # package update without a HIGH/CRITICAL finding would otherwise wait
+            # for the next unrelated rebuild. Fails when apt cannot run.
+            package_upgrades="$(pending_package_upgrades "${image_ref}" | describe_package_upgrades)"
+            if [ -n "${package_upgrades}" ]; then
+              packages_changed=true
+            fi
           else
             echo "Active image is unavailable: ${image_ref}" >&2
             echo 'Treating this as a bootstrap publication; preflight will fail if GHCR is inaccessible.' >&2
@@ -158,6 +175,8 @@ jobs:
             echo "entrypoint_changed=${entrypoint_changed}"
             echo "ubuntu_base_changed=${ubuntu_base_changed}"
             echo "repository_changed=${repository_changed}"
+            echo "packages_changed=${packages_changed}"
+            echo "package_upgrades=${package_upgrades}"
           } >> "${GITHUB_OUTPUT}"
 
           {
@@ -171,6 +190,7 @@ jobs:
             echo "- Entrypoint source: docker-library/postgres@${entrypoint_source_commit} (changed: ${entrypoint_changed})"
             echo "- Ubuntu runtime base: ${ubuntu_base_ref} (changed: ${ubuntu_base_changed})"
             echo "- Packaging repository: ${GITHUB_SHA} (changed: ${repository_changed})"
+            echo "- ${package_upgrades:-Ubuntu package upgrades: none}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Decide rebuild from build inputs
@@ -183,6 +203,8 @@ jobs:
           ENTRYPOINT_CHANGED: ${{ steps.resolve.outputs.entrypoint_changed }}
           UBUNTU_BASE_CHANGED: ${{ steps.resolve.outputs.ubuntu_base_changed }}
           REPOSITORY_CHANGED: ${{ steps.resolve.outputs.repository_changed }}
+          PACKAGES_CHANGED: ${{ steps.resolve.outputs.packages_changed }}
+          PACKAGE_UPGRADES: ${{ steps.resolve.outputs.package_upgrades }}
           FORCE_REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.force_rebuild == 'true' }}
         run: |
           set -euo pipefail
@@ -212,6 +234,9 @@ jobs:
           fi
           if [ "${REPOSITORY_CHANGED}" = 'true' ]; then
             reasons+=('packaging repository commit changed')
+          fi
+          if [ "${PACKAGES_CHANGED}" = 'true' ]; then
+            reasons+=("${PACKAGE_UPGRADES}")
           fi
           if [ "${FORCE_REBUILD}" = 'true' ]; then
             reasons+=('manual force_rebuild input')

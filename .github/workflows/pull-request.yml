@@ -1,0 +1,56 @@
+name: Pull request checks
+run-name: Checks for pull request ${{ github.event.pull_request.number }}
+
+# Builds, scans and tests the PostgreSQL image of every pull request to master through
+# build-custom.yml, which resolves the current verified build inputs, applies the
+# vulnerability policy of publication and never publishes. The reviewer sees the result
+# before merging; nothing is merged automatically. Pull requests opened by the Renovate
+# GitHub App start it too. It also validates renovate.json5 with the Renovate release
+# renovate.yml runs, so a pull request that moves that release shows whether the
+# configuration needs a migration.
+on:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+# A new push to the pull request replaces the checks of the previous one.
+concurrency:
+  group: pull-request-checks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-custom.yml
+    permissions:
+      contents: read
+
+  renovate-config:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate the Renovate configuration with the release renovate.yml runs
+        run: |
+          set -euo pipefail
+
+          # renovate.yml holds the only copy of the release, which Renovate itself updates.
+          versions="$(sed -nE 's/^[[:space:]]*renovate-version:[[:space:]]*([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*$/\1/p' .github/workflows/renovate.yml)"
+          if [ "$(printf '%s\n' "${versions}" | grep -c .)" -ne 1 ]; then
+            echo "Expected exactly one renovate-version X.Y.Z in .github/workflows/renovate.yml, found: ${versions:-none}." >&2
+            exit 1
+          fi
+          echo "- Renovate release: ${versions}" >> "$GITHUB_STEP_SUMMARY"
+
+          # --strict also fails on a configuration that this release would migrate.
+          docker run --rm \
+            -v "${PWD}:/usr/src/app:ro" \
+            -w /usr/src/app \
+            --entrypoint renovate-config-validator \
+            "ghcr.io/renovatebot/renovate:${versions}" \
+            --strict

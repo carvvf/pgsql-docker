@@ -8,7 +8,7 @@ source "${SCRIPT_DIR}/lib/build_inputs.sh"
 
 resolve_build_inputs
 docker build --platform linux/amd64 --pull --no-cache \
-  --build-arg "PG_MAJOR=18" \
+  --build-arg "PG_MAJOR=${POSTGRES_MAJOR}" \
   --build-arg "GOSU_SOURCE_REF=${gosu_source_ref}" \
   --build-arg "GOSU_SOURCE_REVISION=${gosu_source_revision}" \
   --build-arg "GO_TOOLCHAIN_VERSION=${go_toolchain_version}" \
@@ -21,5 +21,6 @@ docker build --platform linux/amd64 --pull --no-cache \
   --build-arg "POSTGRES_IMAGE_VERSION=${upstream_version}-local" \
   --build-arg "UBUNTU_BASE_IMAGE=${ubuntu_base_ref}" \
   --build-arg "UBUNTU_BASE_DIGEST=${ubuntu_base_digest}" \
+  --build-arg "UBUNTU_SERIES=${UBUNTU_SERIES}" \
   --build-arg "CACHEBUST=$(date -u +%s)" \
   -t "${IMAGE_REF:-pgsql-custom:local}" "${REPO_ROOT}"

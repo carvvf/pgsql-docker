@@ -7,14 +7,22 @@ CI publication blocks fixable HIGH/CRITICAL findings and reports findings withou
 > assistant and may contain inaccuracies. Verify anything critical against the source code.
 
 This repository publishes a hardened `linux/amd64` PostgreSQL image compiled
-from the verified upstream source release corresponding to `postgres:18`.
-Its final runtime base is `ubuntu:24.04`.
+from the verified upstream source release corresponding to the official
+`postgres` image of the major pinned as `POSTGRES_MAJOR` in
+`tools/lib/build_inputs.sh`. Its final runtime base is the Ubuntu LTS release
+pinned as `UBUNTU_SERIES` in `tools/lib/build_inputs.sh`. Every resolved
+reference, check and label derives from that constant, and the tests keep the
+Dockerfile default for direct builds equal to it. A new LTS release is a
+reviewed change, listed on the Dependency Dashboard and proposed as a pull
+request only once approved.
 
 Its daily GitHub Actions workflow resolves the official-image manifest digest,
 the matching PostgreSQL source tag and commit, the pinned `gosu` and
 `docker-library/postgres` entrypoint-script sources, and the Ubuntu runtime
-manifest digest. It rebuilds when any of these change or when the active image
-was built from another commit of this repository, scans the candidate
+manifest digest. It rebuilds when any of these change, when the active image
+lacks an Ubuntu package upgrade that the build would install (`apt-get -s
+upgrade` inside it, see `tools/lib/package_upgrades.sh`), or when the active
+image was built from another commit of this repository, scans the candidate
 with Trivy, and publishes it to GHCR only if fixable HIGH and CRITICAL OS or
 library findings are absent. Findings without a listed fixed version produce
 explicit warning annotations and remain in the retained evidence.
@@ -117,8 +125,9 @@ correctly.
 
 ## Local build and validation
 
-Build the PostgreSQL 18 release currently identified by `postgres:18` from
-source on Ubuntu 24.04, using the same input resolver as GitHub Actions:
+Build the release of the pinned PostgreSQL major currently identified by its
+official image from source on the pinned Ubuntu release, using the same input
+resolver as GitHub Actions:
 
 ```bash
 bash tools/build_local_image.sh
@@ -128,7 +137,7 @@ The VS Code `Docker: build local image` task invokes this entrypoint. It pulls
 the official `linux/amd64` image as a release signal, reads `PG_VERSION`,
 `PG_MAJOR`, and `GOSU_VERSION`, resolves the matching PostgreSQL and gosu source
 tags and commits, pins the `docker-library/postgres` master commit for the
-entrypoint scripts, resolves the Ubuntu 24.04 runtime manifest digest, and
+entrypoint scripts, resolves the pinned Ubuntu runtime manifest digest, and
 selects the Go toolchain used to compile gosu (see below).
 The official PostgreSQL image is not used as the runtime base. All resolved
 values are passed explicitly to the Dockerfile; every source checkout must
@@ -139,7 +148,7 @@ needed.
 To select a specific release within the supported major version:
 
 ```bash
-POSTGRES_SOURCE_REF=REL_18_6 bash tools/build_local_image.sh
+POSTGRES_SOURCE_REF=REL_<major>_<minor> bash tools/build_local_image.sh
 ```
 
 `tools/lib/build_inputs.sh` owns the shared resolver used by the local build,
@@ -156,20 +165,21 @@ explicit release override must resolve to its verified upstream commit.
 Explicit digest references retain their release signal, and an explicit
 entrypoint commit is retained and verified during the Dockerfile checkout.
 
-The resolver rejects `postgres:latest`, references to other majors, and even
-an explicitly pinned digest whose image reports a major other than 18.
-Local builds pass `PG_MAJOR=18` explicitly. This preserves the existing data
-format contract; a major upgrade remains a separate coordinated operation.
-Ubuntu inputs must identify the official 24.04 image.
+The resolver rejects `postgres:latest`, references to other majors, and even an
+explicitly pinned digest whose image reports a major other than the pinned one.
+Every build passes `PG_MAJOR` from `POSTGRES_MAJOR` explicitly, and the
+Dockerfile has no default for it. This preserves the existing data format
+contract; a major upgrade remains a separate coordinated operation. Ubuntu
+inputs must identify the official image of the pinned release.
 
 Local OCI versions use `<postgres-version>-local`; published images retain
 `<postgres-version>-custom.<N>`. Both paths record all three source revisions,
 the official-image digest, and the runtime-base digest. The image version label
-is set explicitly instead of inheriting Ubuntu's `24.04` label. Direct Dockerfile
-builds require verified source arguments; there are no static source-version
-or entrypoint-commit fallbacks. Input parity and provenance do not guarantee
-binary reproducibility across different build times. Publication still requires
-the existing vulnerability and runtime gates.
+is set explicitly instead of inheriting Ubuntu's release label. Direct
+Dockerfile builds require verified source arguments; there are no static
+source-version or entrypoint-commit fallbacks. Input parity and provenance do
+not guarantee binary reproducibility across different build times. Publication
+still requires the existing vulnerability and runtime gates.
 
 The `gosu` build uses the newest stable patch release of Go 1.27. The resolver
 reads Go's release index (`https://go.dev/dl/?mode=json&include=all`), ignores
@@ -184,22 +194,26 @@ from the resolved version. An explicit `GO_TOOLCHAIN_VERSION` must belong to the
 for it. Moving to another Go minor series is a deliberate edit to
 `GO_TOOLCHAIN_SERIES` in `tools/lib/build_inputs.sh`.
 
-After verifying the upstream `gosu` source, the build updates
-`github.com/moby/sys/user` to `v0.4.1` and `golang.org/x/sys` to `v0.44.0` to
-remediate their reported vulnerabilities. These are explicit
-dependency updates to the upstream release, not an unmodified upstream build.
-The module pins replace the module v0.1.0 inputs reported by Trivy; these Go
-dependency updates do not select PostgreSQL's source version.
+After verifying the upstream `gosu` source, the build upgrades the modules
+required by `build/gosu-modules/go.mod` (today `github.com/moby/sys/user` and
+`golang.org/x/sys`), whose versions in upstream `gosu` carry reported
+vulnerabilities. These are explicit dependency updates to the upstream release,
+not an unmodified upstream build, and they do not select PostgreSQL's source
+version. Renovate proposes newer versions of these modules in its cumulative
+pull request, with the checksums regenerated by Go.
 
-`build/gosu-dependencies.sum` records the module archive and `go.mod` checksums
-obtained from Go's public checksum database. They are merged into the upstream
-`go.sum` before updating dependencies. Go checksum authentication remains
-enabled, `go mod verify` checks the module cache, and `go build -mod=readonly`
-prevents the compilation step from modifying dependency requirements.
-`GOTOOLCHAIN=local` keeps compilation on the checksum-verified toolchain.
-Local and GitHub Actions builds use this same Dockerfile and dependency policy.
-Rebuild the image before scanning it; refreshing Ubuntu packages or rebuilding
-unchanged module pins cannot update the module code embedded in `gosu`.
+`build/gosu-modules/go.sum` records the module archive and `go.mod` checksums
+obtained from Go's public checksum database, and `tests/test_gosu_modules.py`
+fails when a required version lacks them. They are merged into the upstream
+`go.sum` before updating dependencies. `build/gosu-modules/modules.go` only
+imports the modules so that `go mod tidy` keeps them; it is never built. Go
+checksum authentication remains enabled, `go mod verify` checks the module
+cache, and `go build -mod=readonly` prevents the compilation step from
+modifying dependency requirements. `GOTOOLCHAIN=local` keeps compilation on the
+checksum-verified toolchain. Local and GitHub Actions builds use this same
+Dockerfile and dependency policy. Rebuild the image before scanning it;
+refreshing Ubuntu packages or rebuilding unchanged module pins cannot update
+the module code embedded in `gosu`.
 
 Run resolver regression tests with Python 3's standard library and jq. Docker,
 Git, and curl are simulated; these tests require no daemon or network:
@@ -309,13 +323,41 @@ After publication, follow the downstream update procedure above, retaining the
 data volumes. A clean rebuild completes successfully; operators remain
 responsible for deploying the published image.
 
+Every pull request to `master` starts `pull-request.yml`, which runs
+`build-custom.yml` with the current verified build inputs: build, Trivy scan under the
+publication vulnerability policy, and the runtime test of the `linux/amd64` candidate.
+It also validates `renovate.json5` with the Renovate release `renovate.yml` runs. It
+publishes nothing; review its result before merging.
+
+Dependency updates: `renovate.yml` runs Renovate weekly (Monday night, Europe/Rome)
+and on demand as the `ragtime-renovate` GitHub App, whose client ID is the repository
+variable `RENOVATE_APP_CLIENT_ID` and private key the secret
+`RENOVATE_APP_PRIVATE_KEY`. It proposes only what the daily workflow does not take on
+its own:
+
+- in one cumulative pull request: a new Go minor series
+  (`GO_TOOLCHAIN_SERIES`), a new Trivy line (`TRIVY_SERIES`), new versions of
+  the modules the gosu build upgrades to (`build/gosu-modules`), and new
+  versions of the GitHub Actions and of the Renovate release the workflow runs;
+- on the Dependency Dashboard issue, awaiting approval, as separate items: a
+  new Ubuntu LTS release (`UBUNTU_SERIES` and the Dockerfile default that
+  mirrors it) and a new PostgreSQL major (`POSTGRES_MAJOR`). Approving an item
+  opens its own pull request, where the change is built and tested. A
+  PostgreSQL major also needs the `pg_upgrade` or dump/restore procedure for
+  `postgres_data` and the matching change in `ragtime-rag-orch` before it is
+  merged.
+
+Nothing is merged automatically. Run it on demand with
+`gh workflow run renovate.yml --repo carvvf/pgsql-docker`.
+
 ## VS Code tasks
 
 The workspace provides these tasks without requiring locally installed lint or
 scanner binaries:
 
 - `Docker: build local image` compiles `pgsql-custom:local` from the
-  verified official PostgreSQL 18 release signal on Ubuntu 24.04.
+  verified official release signal of the pinned PostgreSQL major on the pinned
+  Ubuntu release.
 - `Test: PostgreSQL runtime` builds the image and runs the Ragtime-compatible
   smoke test against the bootstrap scripts of `carvvf/ragtime-rag-orch`'s
   `master` branch, downloaded with the GitHub CLI. Only when that download

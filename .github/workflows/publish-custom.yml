@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       postgres_upstream_ref:
-        description: Optional immutable postgres:18 reference; empty resolves postgres:18
+        description: Optional immutable official image reference; empty resolves the major pinned as POSTGRES_MAJOR
         required: false
         default: ''
       postgres_upstream_version:
-        description: Optional PostgreSQL version; empty resolves postgres:18's PG_VERSION
+        description: Optional PostgreSQL version; empty resolves the official image's PG_VERSION
         required: false
         default: ''
       postgres_upstream_digest:
@@ -25,7 +25,7 @@ on:
         required: false
         default: ''
       gosu_source_ref:
-        description: Optional gosu source tag; empty resolves postgres:18's GOSU_VERSION
+        description: Optional gosu source tag; empty resolves the official image's GOSU_VERSION
         required: false
         default: ''
       gosu_source_revision:
@@ -37,7 +37,7 @@ on:
         required: false
         default: ''
       ubuntu_base_ref:
-        description: Optional immutable Ubuntu runtime reference; empty resolves ubuntu:24.04
+        description: Optional immutable Ubuntu runtime reference; empty resolves the release pinned as UBUNTU_SERIES in tools/lib/build_inputs.sh
         required: false
         default: ''
       ubuntu_base_digest:
@@ -125,6 +125,8 @@ jobs:
       entrypoint_source_commit: ${{ steps.resolve.outputs.entrypoint_source_commit }}
       ubuntu_base_ref: ${{ steps.resolve.outputs.ubuntu_base_ref }}
       ubuntu_base_digest: ${{ steps.resolve.outputs.ubuntu_base_digest }}
+      ubuntu_series: ${{ steps.resolve.outputs.ubuntu_series }}
+      postgres_major: ${{ steps.resolve.outputs.postgres_major }}
 
     steps:
       - name: Checkout repository
@@ -136,12 +138,15 @@ jobs:
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
+      - name: Check the gosu module checksums
+        run: python3 -m unittest discover -s tests -p test_gosu_modules.py
+
       # PostgreSQL's on-disk format is not compatible across major versions
       # (see AGENTS.md "Version and upgrade policy"). Pulling the
-      # major-pinned "postgres:18" tag, rather than "postgres:latest",
-      # structurally prevents this workflow from ever auto-resolving a PG19
-      # candidate: moving to a new major version requires a deliberate edit
-      # to this pinned tag, not just a rerun.
+      # official image tag of POSTGRES_MAJOR, rather than "postgres:latest",
+      # structurally prevents this workflow from ever auto-resolving the next
+      # major: moving to it requires a deliberate edit of POSTGRES_MAJOR, not
+      # just a rerun.
       - name: Resolve upstream release, source revisions, Ubuntu base, and custom version
         id: resolve
         env:
@@ -225,6 +230,8 @@ jobs:
             echo "entrypoint_source_commit=${entrypoint_source_commit}"
             echo "ubuntu_base_ref=${ubuntu_base_ref}"
             echo "ubuntu_base_digest=${ubuntu_base_digest}"
+            echo "ubuntu_series=${UBUNTU_SERIES}"
+            echo "postgres_major=${POSTGRES_MAJOR}"
           } >> "${GITHUB_OUTPUT}"
 
           {
@@ -287,9 +294,10 @@ jobs:
             io.github.carvvf.pgsql-docker.gosu.go.version=${{ needs.preflight.outputs.go_toolchain_version }}
             io.github.carvvf.pgsql-docker.gosu.go.sha256=${{ needs.preflight.outputs.go_toolchain_sha256 }}
             io.github.carvvf.pgsql-docker.entrypoint.source.commit=${{ needs.preflight.outputs.entrypoint_source_commit }}
-            io.github.carvvf.pgsql-docker.runtime.base.name=ubuntu:24.04
+            io.github.carvvf.pgsql-docker.runtime.base.name=ubuntu:${{ needs.preflight.outputs.ubuntu_series }}
             io.github.carvvf.pgsql-docker.runtime.base.digest=${{ needs.preflight.outputs.ubuntu_base_digest }}
           build-args: |
+            PG_MAJOR=${{ needs.preflight.outputs.postgres_major }}
             POSTGRES_SOURCE_REF=${{ needs.preflight.outputs.source_ref }}
             POSTGRES_SOURCE_REVISION=${{ needs.preflight.outputs.source_revision }}
             POSTGRES_UPSTREAM_VERSION=${{ needs.preflight.outputs.upstream_version }}
@@ -302,6 +310,7 @@ jobs:
             ENTRYPOINT_SOURCE_COMMIT=${{ needs.preflight.outputs.entrypoint_source_commit }}
             UBUNTU_BASE_IMAGE=${{ needs.preflight.outputs.ubuntu_base_ref }}
             UBUNTU_BASE_DIGEST=${{ needs.preflight.outputs.ubuntu_base_digest }}
+            UBUNTU_SERIES=${{ needs.preflight.outputs.ubuntu_series }}
             SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
             CACHEBUST=${{ github.run_id }}
 

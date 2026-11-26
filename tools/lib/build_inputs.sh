@@ -47,6 +47,21 @@ resolve_source_revision() {
 GO_TOOLCHAIN_SERIES='1.27'
 GO_RELEASES_URL='https://go.dev/dl/?mode=json&include=all'
 
+# PostgreSQL major version of the image. Every reference, check, label and build
+# argument derives from it. Its on-disk format is not compatible across majors, so
+# a new major is a reviewed change that ships with a tested pg_upgrade (or
+# dump/restore) procedure: Renovate lists it on the Dependency Dashboard and opens
+# its pull request only once approved.
+# renovate: datasource=docker depName=postgres
+POSTGRES_MAJOR='18'
+
+# Ubuntu release of the runtime base. Every resolved reference, check and label
+# derives from it; the Dockerfile default for direct builds mirrors it under test.
+# A new LTS release is a reviewed change, with its tests and migration notes: Renovate
+# lists it on the Dependency Dashboard and opens its pull request only once approved.
+# renovate: datasource=docker depName=ubuntu versioning=ubuntu
+UBUNTU_SERIES='24.04'
+
 resolve_go_toolchain() {
   local requested_version="${GO_TOOLCHAIN_VERSION:-}"
   local requested_sha256="${GO_TOOLCHAIN_SHA256:-}"
@@ -100,8 +115,8 @@ resolve_build_inputs() {
   for required in docker git awk curl jq; do
     command -v "${required}" >/dev/null || { build_input_error "${required} is required."; return 1; }
   done
-  if [ "${PG_MAJOR:-18}" != '18' ]; then
-    build_input_error 'Only PostgreSQL major 18 is supported; a major upgrade requires a coordinated migration.'
+  if [ "${PG_MAJOR:-${POSTGRES_MAJOR}}" != "${POSTGRES_MAJOR}" ]; then
+    build_input_error "Only PostgreSQL major ${POSTGRES_MAJOR} is supported; a major upgrade requires a coordinated migration."
     return 1
   fi
   local requested_version="${POSTGRES_UPSTREAM_VERSION:-}"
@@ -109,16 +124,18 @@ resolve_build_inputs() {
   local requested_digest="${POSTGRES_UPSTREAM_DIGEST:-}"
   local image_environment pg_version_full official_major official_gosu_version
   if [ -n "${requested_source}" ]; then
-    if [[ ! "${requested_source}" =~ ^REL_18_([0-9]+)$ ]]; then
-      build_input_error "A PostgreSQL major 18 release tag is required: ${requested_source}"
+    local source_pattern="^REL_${POSTGRES_MAJOR}_([0-9]+)$"
+    if [[ ! "${requested_source}" =~ ${source_pattern} ]]; then
+      build_input_error "A PostgreSQL major ${POSTGRES_MAJOR} release tag is required: ${requested_source}"
       return 1
     fi
     if [ -z "${requested_version}" ]; then
-      requested_version="18.${BASH_REMATCH[1]}"
+      requested_version="${POSTGRES_MAJOR}.${BASH_REMATCH[1]}"
     fi
   fi
-  if [ -n "${requested_version}" ] && [[ ! "${requested_version}" =~ ^18\.[0-9]+$ ]]; then
-    build_input_error "A PostgreSQL major 18 version is required: ${requested_version}"
+  local version_pattern="^${POSTGRES_MAJOR}\.[0-9]+$"
+  if [ -n "${requested_version}" ] && [[ ! "${requested_version}" =~ ${version_pattern} ]]; then
+    build_input_error "A PostgreSQL major ${POSTGRES_MAJOR} version is required: ${requested_version}"
     return 1
   fi
   if [ -n "${requested_digest}" ] && [[ ! "${requested_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
@@ -130,11 +147,12 @@ resolve_build_inputs() {
     if [ -n "${requested_digest}" ]; then
       upstream_ref="postgres@${requested_digest}"
     else
-      upstream_ref="postgres:${requested_version:-18}"
+      upstream_ref="postgres:${requested_version:-${POSTGRES_MAJOR}}"
     fi
   fi
-  if [[ ! "${upstream_ref}" =~ ^postgres(:18(\.[0-9]+)?(-[A-Za-z0-9_.-]+)?|@sha256:[a-f0-9]{64})$ ]]; then
-    build_input_error "An official PostgreSQL major 18 reference is required: ${upstream_ref}"
+  local upstream_pattern="^postgres(:${POSTGRES_MAJOR}(\.[0-9]+)?(-[A-Za-z0-9_.-]+)?|@sha256:[a-f0-9]{64})$"
+  if [[ ! "${upstream_ref}" =~ ${upstream_pattern} ]]; then
+    build_input_error "An official PostgreSQL major ${POSTGRES_MAJOR} reference is required: ${upstream_ref}"
     return 1
   fi
   upstream_digest="$(pull_image_digest "${upstream_ref}")"
@@ -148,8 +166,8 @@ resolve_build_inputs() {
   official_major="$(awk '/^PG_MAJOR=/ { print substr($0, 10); exit }' <<<"${image_environment}")"
   official_gosu_version="$(awk '/^GOSU_VERSION=/ { print substr($0, 14); exit }' <<<"${image_environment}")"
   upstream_version="${pg_version_full%%-*}"
-  if [ "${official_major}" != '18' ] || [[ ! "${upstream_version}" =~ ^18\.[0-9]+$ ]]; then
-    build_input_error "The official image must contain PostgreSQL major 18: ${pg_version_full}"
+  if [ "${official_major}" != "${POSTGRES_MAJOR}" ] || [[ ! "${upstream_version}" =~ ${version_pattern} ]]; then
+    build_input_error "The official image must contain PostgreSQL major ${POSTGRES_MAJOR}: ${pg_version_full}"
     return 1
   fi
   if [ -n "${requested_version}" ] && [ "${requested_version}" != "${upstream_version}" ]; then
@@ -184,13 +202,14 @@ resolve_build_inputs() {
   fi
   ubuntu_base_ref="${UBUNTU_BASE_IMAGE:-}"
   if [ -z "${ubuntu_base_ref}" ]; then
-    ubuntu_base_ref="ubuntu:24.04"
+    ubuntu_base_ref="ubuntu:${UBUNTU_SERIES}"
     if [ -n "${requested_digest}" ]; then
       ubuntu_base_ref="ubuntu@${requested_digest}"
     fi
   fi
-  if [[ ! "${ubuntu_base_ref}" =~ ^ubuntu(:24\.04|@sha256:[a-f0-9]{64})$ ]]; then
-    build_input_error "An official Ubuntu 24.04 reference is required: ${ubuntu_base_ref}"
+  local ubuntu_ref_pattern="^ubuntu(:${UBUNTU_SERIES//./\\.}|@sha256:[a-f0-9]{64})$"
+  if [[ ! "${ubuntu_base_ref}" =~ ${ubuntu_ref_pattern} ]]; then
+    build_input_error "An official Ubuntu ${UBUNTU_SERIES} reference is required: ${ubuntu_base_ref}"
     return 1
   fi
   ubuntu_base_digest="$(pull_image_digest "${ubuntu_base_ref}")"
@@ -201,8 +220,8 @@ resolve_build_inputs() {
   ubuntu_base_ref="ubuntu@${ubuntu_base_digest}"
   local ubuntu_version
   ubuntu_version="$(docker image inspect "${ubuntu_base_ref}" --format '{{index .Config.Labels "org.opencontainers.image.version"}}')"
-  if [ "${ubuntu_version}" != '24.04' ]; then
-    build_input_error "Ubuntu 24.04 is required; resolved ${ubuntu_version}."
+  if [ "${ubuntu_version}" != "${UBUNTU_SERIES}" ]; then
+    build_input_error "Ubuntu ${UBUNTU_SERIES} is required; resolved ${ubuntu_version}."
     return 1
   fi
   resolve_go_toolchain || return
@@ -224,5 +243,7 @@ write_build_inputs() {
     "go_toolchain_sha256=${go_toolchain_sha256}" \
     "entrypoint_source_commit=${entrypoint_source_commit}" \
     "ubuntu_base_ref=${ubuntu_base_ref}" \
-    "ubuntu_base_digest=${ubuntu_base_digest}"
+    "ubuntu_base_digest=${ubuntu_base_digest}" \
+    "ubuntu_series=${UBUNTU_SERIES}" \
+    "postgres_major=${POSTGRES_MAJOR}"
 }

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # The PostgreSQL release and its two auxiliary sources (gosu, and the
 # docker-library/postgres entrypoint scripts) are resolved locally and in CI
-# against postgres:18, its recorded gosu release, and docker-library/postgres's
+# against postgres:<POSTGRES_MAJOR>, its recorded gosu release, and docker-library/postgres's
 # current master, respectively. See AGENTS.md "Security and update policy".
 ARG POSTGRES_SOURCE_REPOSITORY=https://github.com/postgres/postgres.git
 ARG POSTGRES_SOURCE_REF
@@ -11,10 +11,16 @@ ARG GOSU_SOURCE_REF
 ARG GOSU_SOURCE_REVISION
 ARG ENTRYPOINT_SOURCE_REPOSITORY=https://github.com/docker-library/postgres.git
 ARG ENTRYPOINT_SOURCE_COMMIT
+# Every resolved build passes the Ubuntu reference and release from
+# UBUNTU_SERIES in tools/lib/build_inputs.sh. This default serves direct builds
+# only, as BuildKit requires a valid default for an ARG used in FROM;
+# tests/test_build_inputs.py keeps it equal to UBUNTU_SERIES.
 ARG UBUNTU_BASE_IMAGE=ubuntu:24.04
-ARG PG_MAJOR=18
-# ubuntu:24.04's "golang-go" apt package is frozen at Go 1.22 (from the
-# 24.04 release), which by now carries a long list of fixed Go standard
+# Passed by every build from POSTGRES_MAJOR in tools/lib/build_inputs.sh; it has no
+# default, so a build without it stops in the source stage.
+ARG PG_MAJOR
+# An Ubuntu release's "golang-go" apt package stays at the Go minor it shipped
+# with (Go 1.22 for 24.04), which in time carries a long list of fixed Go standard
 # library CVEs (net/http, crypto/tls, encoding/*, ...) that end up
 # statically embedded in any binary it compiles, including gosu, even though
 # gosu itself barely touches those packages. Building gosu with a current,
@@ -47,8 +53,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN test "${PG_MAJOR}" = 18 \
-    && case "${POSTGRES_SOURCE_REF}" in REL_18_*) ;; *) echo 'A PostgreSQL major 18 release tag is required.' >&2; exit 1 ;; esac \
+RUN test -n "${PG_MAJOR}" \
+    && case "${POSTGRES_SOURCE_REF}" in "REL_${PG_MAJOR}_"*) ;; *) echo "A PostgreSQL major ${PG_MAJOR} release tag is required." >&2; exit 1 ;; esac \
     && test -n "${POSTGRES_SOURCE_REF}" \
     && test -n "${POSTGRES_SOURCE_REVISION}" \
     && git clone --depth 1 --branch "${POSTGRES_SOURCE_REF}" \
@@ -98,17 +104,24 @@ RUN curl --fail --silent --show-error --location \
     && rm /tmp/go.tar.gz
 ENV PATH="/usr/local/go/bin:${PATH}"
 COPY --from=source /source/gosu /source/gosu
-COPY build/gosu-dependencies.sum /tmp/gosu-dependencies.sum
+COPY build/gosu-modules/go.mod build/gosu-modules/go.sum /tmp/gosu-modules/
 WORKDIR /source/gosu
 ENV CGO_ENABLED=0 \
     GOTOOLCHAIN=local \
     GOSUMDB=sum.golang.org
 # Disable both local Go telemetry counters and uploads before compiling gosu.
-# Upgrade vulnerable upstream module pins using committed Go module checksums.
+# Upgrade the upstream module pins to the direct requirements of
+# build/gosu-modules/go.mod, using the checksums committed in its go.sum. The
+# module list is split into separate go get arguments on purpose.
+# hadolint ignore=SC2086
 RUN --mount=type=cache,target=/root/go/pkg/mod,id=pgsql-docker-gosu-gomod,sharing=locked \
     go telemetry off \
-    && cat /tmp/gosu-dependencies.sum >> go.sum \
-    && go get github.com/moby/sys/user@v0.4.1 golang.org/x/sys@v0.44.0 \
+    && modules="$(awk '/^require \(/ { block = 1; next } block && /^\)/ { block = 0 } \
+        block && !/indirect/ { print $1 "@" $2 } /^require [^(]/ && !/indirect/ { print $2 "@" $3 }' \
+        /tmp/gosu-modules/go.mod)" \
+    && test -n "${modules}" \
+    && cat /tmp/gosu-modules/go.sum >> go.sum \
+    && go get ${modules} \
     && go mod verify \
     && go build -mod=readonly -trimpath -ldflags '-s -w' -o /out/gosu . \
     && /out/gosu --version
@@ -186,11 +199,12 @@ ARG ENTRYPOINT_SOURCE_REPOSITORY
 ARG ENTRYPOINT_SOURCE_COMMIT
 ARG UBUNTU_BASE_IMAGE
 ARG UBUNTU_BASE_DIGEST=unknown
+ARG UBUNTU_SERIES
 ARG PG_MAJOR
 ARG SOURCE_REPOSITORY=https://github.com/carvvf/pgsql-docker
 
 LABEL org.opencontainers.image.title="PostgreSQL custom image"
-LABEL org.opencontainers.image.description="PostgreSQL rebuilt from verified source on Ubuntu 24.04"
+LABEL org.opencontainers.image.description="PostgreSQL rebuilt from verified source on Ubuntu ${UBUNTU_SERIES}"
 LABEL org.opencontainers.image.documentation="${SOURCE_REPOSITORY}"
 LABEL org.opencontainers.image.source="${SOURCE_REPOSITORY}"
 LABEL org.opencontainers.image.url="${SOURCE_REPOSITORY}"
@@ -214,7 +228,7 @@ LABEL io.github.carvvf.pgsql-docker.runtime.base.digest="${UBUNTU_BASE_DIGEST}"
 # Forces a fresh apt-get run on every build even when GHA layer caching would
 # otherwise reuse this layer unchanged (same base digest, same PostgreSQL
 # source revision): apt mirrors publish OS security patches far more often
-# than the ubuntu:24.04 tag digest changes, and this layer is how those
+# than the Ubuntu tag digest changes, and this layer is how those
 # patches reach the image.
 ARG CACHEBUST=unknown
 

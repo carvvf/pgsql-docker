@@ -106,8 +106,9 @@ if ! docker image inspect "${IMAGE_REF}" >/dev/null 2>&1; then
 fi
 
 EXPECTED_VERSION="$(docker image inspect "${IMAGE_REF}" --format '{{index .Config.Labels "io.github.carvvf.pgsql-docker.postgres.upstream.version"}}')"
-if [[ ! "${EXPECTED_VERSION}" =~ ^18\.[0-9]+$ ]]; then
-  echo "The image must record its verified PostgreSQL major 18 version. Rebuild it with tools/build_local_image.sh." >&2
+EXPECTED_MAJOR="$(sed -n "s/^POSTGRES_MAJOR='\([0-9]*\)'$/\1/p" "$(dirname "${BASH_SOURCE[0]}")/../tools/lib/build_inputs.sh")"
+if [ -z "${EXPECTED_MAJOR}" ] || [[ ! "${EXPECTED_VERSION}" =~ ^${EXPECTED_MAJOR}\.[0-9]+$ ]]; then
+  echo "The image must record its verified PostgreSQL major ${EXPECTED_MAJOR} version. Rebuild it with tools/build_local_image.sh." >&2
   exit 1
 fi
 
