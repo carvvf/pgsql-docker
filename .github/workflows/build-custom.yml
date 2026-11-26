@@ -108,7 +108,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check vulnerability report policy
         run: python3 -m unittest scripts.trivy.test_report_policy
@@ -120,7 +120,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p test_gosu_modules.py
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.0.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Resolve verified build inputs
         id: build_inputs
@@ -148,7 +148,7 @@ jobs:
           echo "IMAGE_REF=local/pgsql-custom:amd64-${tag_suffix}" >> "${GITHUB_ENV}"
 
       - name: Build linux/amd64 image without pushing
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64
@@ -223,7 +223,7 @@ jobs:
 
       - name: Upload candidate Trivy report
         if: always()
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: trivy-candidate-amd64-${{ github.run_id }}-${{ github.run_attempt }}
           path: trivy-report-candidate-amd64.json
