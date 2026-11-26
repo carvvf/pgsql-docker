@@ -194,7 +194,9 @@ The expected checks are:
    rebuild; the candidate and the republished `latest` are scanned anyway.
 3. Build a custom candidate when the PostgreSQL source revision, Ubuntu
    runtime digest, or gosu Go toolchain version has changed, the active image
-   was built from another commit of this repository (checked daily and after
+   lacks an Ubuntu package upgrade the build would install (simulated with
+   `apt-get -s upgrade` inside it), the active image was built from another
+   commit of this repository (checked daily and after
    every push to `master`), the active image has findings, or a manual workflow
    explicitly requests a rebuild.
 4. Build and scan the `linux/amd64` candidate with Trivy. Scope the scan with
