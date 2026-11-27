@@ -10,13 +10,18 @@
 # the next build installs.
 
 # Prints "<package> <installed> -> <candidate>" for each pending upgrade of IMAGE_REF,
-# which must already be pulled. Fails when apt cannot refresh its index or simulate
-# the upgrade, or prints a line it does not understand: an unknown state never
-# passes as "up to date".
+# which must already be pulled. The index refresh goes through build/retry.sh, which
+# retries it while a mirror is mid-sync. --error-on=any fails it on an unreachable source,
+# which apt only warns about: the published image holds no index, so the simulation would
+# otherwise list no upgrade. Fails when apt still cannot refresh its index,
+# cannot simulate the upgrade, or prints a line this does not understand: an unknown
+# state never passes as "up to date".
 pending_package_upgrades() {
-  local image_ref="$1" output
-  if ! output="$(docker run --rm --pull never --user root --entrypoint sh "${image_ref}" \
-    -c 'apt-get update -qq >/dev/null && apt-get -s upgrade' 2>&1)"; then
+  local image_ref="$1" output helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/build/retry.sh"
+  if ! output="$(docker run --rm --pull never --user root -v "${helper}:/mnt/retry.sh:ro" \
+    --entrypoint sh "${image_ref}" \
+    -c 'sh /mnt/retry.sh apt-get update -qq --error-on=any >/dev/null && apt-get -s upgrade' 2>&1)"; then
     printf 'Cannot simulate the apt upgrade of %s:\n%s\n' "${image_ref}" "${output}" >&2
     return 1
   fi

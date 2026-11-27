@@ -28,8 +28,10 @@ Calculating upgrade...
 0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
 """
 
-# Stands in for `docker run`: prints DOCKER_OUTPUT and exits with DOCKER_STATUS.
+# Stands in for `docker run`: records its arguments, prints DOCKER_OUTPUT and exits with
+# DOCKER_STATUS.
 DOCKER_STUB = """#!/usr/bin/env bash
+printf '%s\\n' "$@" > "${DOCKER_ARGS}"
 printf '%s' "${DOCKER_OUTPUT}"
 exit "${DOCKER_STATUS:-0}"
 """
@@ -40,9 +42,10 @@ def run_library(function, stdin="", docker_output="", docker_status=0):
         stub = Path(directory) / "docker"
         stub.write_text(DOCKER_STUB)
         stub.chmod(0o755)
-        env = dict(os.environ, DOCKER_OUTPUT=docker_output, DOCKER_STATUS=str(docker_status))
+        args_file = Path(directory) / "docker-args"
+        env = dict(os.environ, DOCKER_OUTPUT=docker_output, DOCKER_STATUS=str(docker_status), DOCKER_ARGS=str(args_file))
         env["PATH"] = directory + os.pathsep + env["PATH"]
-        return subprocess.run(
+        result = subprocess.run(
             ["bash", "-c", f'set -euo pipefail; source "{LIBRARY}"; {function}'],
             input=stdin,
             env=env,
@@ -50,6 +53,8 @@ def run_library(function, stdin="", docker_output="", docker_status=0):
             text=True,
             check=False,
         )
+        result.docker_args = args_file.read_text().splitlines() if args_file.exists() else []
+        return result
 
 
 class PendingPackageUpgradesTest(unittest.TestCase):
@@ -57,6 +62,12 @@ class PendingPackageUpgradesTest(unittest.TestCase):
         result = run_library("pending_package_upgrades image", docker_output=SIMULATION)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "tzdata 2026e-0ubuntu0.24.04.1 -> 2026f-0ubuntu0.24.04.1\n")
+
+    def test_index_update_goes_through_the_retry_helper(self):
+        result = run_library("pending_package_upgrades image", docker_output=NOTHING)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"{REPO_ROOT / 'build' / 'retry.sh'}:/mnt/retry.sh:ro", result.docker_args)
+        self.assertIn("sh /mnt/retry.sh apt-get update -qq --error-on=any >/dev/null && apt-get -s upgrade", result.docker_args)
 
     def test_no_upgrade_prints_nothing(self):
         result = run_library("pending_package_upgrades image", docker_output=NOTHING)

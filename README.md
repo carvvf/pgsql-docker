@@ -329,6 +329,15 @@ publication vulnerability policy, and the runtime test of the `linux/amd64` cand
 It also validates `renovate.json5` with the Renovate release `renovate.yml` runs. It
 publishes nothing; review its result before merging.
 
+Package index retries: every `apt-get update` of the Dockerfile and of the daily
+package-upgrade check runs through `build/retry.sh`, which retries a failed command up
+to five times with pauses of 30, 60, 90 and 120 seconds, and with `--error-on=any`, so
+that an unreachable source fails it as well: apt only warns about one and exits 0. A
+mirror that is mid-sync (`Hash Sum mismatch`, `File has unexpected size`) therefore no
+longer fails the build or the check at once; a failure that outlasts every attempt
+still fails it. The Dockerfile mounts the script for the command only, so it is not
+part of the image.
+
 Dependency updates: `renovate.yml` runs Renovate weekly (Monday night, Europe/Rome)
 and on demand as the `ragtime-renovate` GitHub App, whose client ID is the repository
 variable `RENOVATE_APP_CLIENT_ID` and private key the secret

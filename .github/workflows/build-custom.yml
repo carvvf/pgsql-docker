@@ -116,6 +116,9 @@ jobs:
       - name: Check shared build input resolution
         run: python3 -m unittest discover -s tests -p test_build_inputs.py
 
+      - name: Check the package index retry helper
+        run: python3 -m unittest discover -s tests -p test_retry.py
+
       - name: Check the gosu module checksums
         run: python3 -m unittest discover -s tests -p test_gosu_modules.py
 

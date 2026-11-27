@@ -48,8 +48,13 @@ ARG ENTRYPOINT_SOURCE_REPOSITORY
 ARG ENTRYPOINT_SOURCE_COMMIT
 ARG PG_MAJOR
 
+# Package index updates go through build/retry.sh, mounted for the command only: it
+# retries them with growing pauses while a distribution mirror is mid-sync.
+# --error-on=any makes an unreachable source an error, and so a retry, too: apt only
+# warns about it, and the install would then fail on a missing index.
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN --mount=type=bind,source=build/retry.sh,target=/mnt/retry.sh \
+    sh /mnt/retry.sh apt-get update --error-on=any \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -88,7 +93,8 @@ FROM ${UBUNTU_BASE_IMAGE} AS gosu-builder
 ARG GO_TOOLCHAIN_VERSION
 ARG GO_TOOLCHAIN_SHA256
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN --mount=type=bind,source=build/retry.sh,target=/mnt/retry.sh \
+    sh /mnt/retry.sh apt-get update --error-on=any \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 RUN if [ -z "${GO_TOOLCHAIN_VERSION}" ] || [ -z "${GO_TOOLCHAIN_SHA256}" ]; then \
@@ -129,7 +135,8 @@ RUN --mount=type=cache,target=/root/go/pkg/mod,id=pgsql-docker-gosu-gomod,sharin
 # hadolint ignore=DL3006
 FROM ${UBUNTU_BASE_IMAGE} AS postgres-builder
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN --mount=type=bind,source=build/retry.sh,target=/mnt/retry.sh \
+    sh /mnt/retry.sh apt-get update --error-on=any \
     && apt-get install -y --no-install-recommends \
       bison \
       build-essential \
@@ -237,7 +244,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # link against (verified with ldd against the postgres-builder output); no
 # -dev packages are needed at runtime.
 # hadolint ignore=DL3008
-RUN apt-get update \
+RUN --mount=type=bind,source=build/retry.sh,target=/mnt/retry.sh \
+    sh /mnt/retry.sh apt-get update --error-on=any \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
