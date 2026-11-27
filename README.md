@@ -356,6 +356,10 @@ its own:
   `postgres_data` and the matching change in `ragtime-rag-orch` before it is
   merged.
 
+Ticking a box on the Dependency Dashboard issue (an approval, a retry) starts a
+run at once instead of at the weekly one; Renovate's own edits of the issue
+start none.
+
 Nothing is merged automatically. Run it on demand with
 `gh workflow run renovate.yml --repo carvvf/pgsql-docker`.
 
